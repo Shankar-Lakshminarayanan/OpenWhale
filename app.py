@@ -14,7 +14,8 @@ import streamlit as st
 # PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Whale & Dealer GEX Terminal",
+    page_title="OpenWhale - Dealer GEX Terminal",
+    page_icon="📡", 
     layout="wide",
     initial_sidebar_state="expanded",
 )
