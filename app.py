@@ -270,7 +270,7 @@ def fetch_finra_darkpool_history(ticker_symbol, lookback_days=12):
 # ==========================================
 # 3. STREAMLIT SIDEBAR & UI CONTROLS
 # ==========================================
-st.sidebar.title("📡 SonarGEX Controls")
+st.sidebar.title("📡 OpenWhale Controls")
 ticker = st.sidebar.text_input("Ticker Symbol (e.g. SPY, QQQ, SPX, NVDA)", value="SPY").upper().strip()
 num_expiries = st.sidebar.slider("Expirations to Aggregate", 1, 12, 4)
 min_vol_oi = st.sidebar.slider("Min Vol/OI Ratio (Whale Filter)", 0.5, 5.0, 1.25, 0.25)
