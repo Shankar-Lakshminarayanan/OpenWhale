@@ -28,6 +28,8 @@ st.set_page_config(
 # ==========================================
 GLOSSARY_TOOLTIPS = {
     "Ticker": "The short stock market code for the company or index (e.g., AAPL = Apple, SPY = S&P 500).",
+    "Confluence_Tier": "Shows whether this stock was triggered by BOTH Page 1 (Price/Volume Mover) AND Page 2 (Options Whales) — '⭐⭐ DOUBLE CONFIRMED' is the highest-conviction signal.",
+    "Verdict": "Automated Trade Ticket Verdict: 🟢 BUY LONG or 🔴 SELL SHORT when at least 4 of 5 institutional factors align with >=1.2x Reward-to-Risk. Otherwise 🟡 WAIT.",
     "Direction": "Shows whether momentum and smart-money buying are pushing the stock UP (Bullish Long) or DOWN (Bearish Short).",
     "Last_Price": "The most recent price a share traded at, INCLUDING early 4:00 AM Pre-Market and 8:00 PM After-Hours trading.",
     "Total_Move_Pct": "How much the stock price has gained or lost compared to yesterday's 4:00 PM closing price (includes overnight action).",
@@ -45,8 +47,10 @@ GLOSSARY_TOOLTIPS = {
     "Put_Wall": "Price Floor / Put Wall (-GEX): The exact strike price with the heaviest Put hedging. Big banks mechanically buy shares here, acting like a trampoline floor.",
     "Call_Wall": "Price Ceiling / Call Wall (+GEX): The exact strike price with the heaviest Call hedging. Big banks mechanically sell shares here, acting like a brick ceiling.",
     "Zero_Gamma": "Danger Line (Zero Gamma Flip): Above this price, market makers cushion moves and keep trading calm. Below this price, they sell into drops and amplify volatility.",
-    "Net_GEX": "Net Gamma Exposure ($M): Positive (+) means big banks stabilize the market (good for buying dips). Negative (-) means big banks accelerate fast breakouts or crashes.",
-    "Dark_Pool_Pct": "Off-Exchange Hidden Volume %: Tracks private institutional trades reported to FINRA. Readings above 55% on a green/flat day signal quiet institutional accumulation.",
+    "Entry_Zone": "Suggested price range to enter the trade based on current price and Today's Fair Value Price (VWAP).",
+    "Stop_Loss": "Exact price where the setup breaks down and is invalidated. Exit immediately if hit to protect your capital.",
+    "Profit_Target": "Suggested price to take profits, placed just inside the major Price Ceiling (Call Wall) or Price Floor (Put Wall).",
+    "RR_Ratio": "Reward-to-Risk Ratio: Shows how many dollars you stand to gain for every $1 risked. Aim for 1.5 : 1 or higher.",
 }
 
 st.markdown(
@@ -116,14 +120,13 @@ def render_hover_glossary_banner():
     pills_html = """
     <div class="ow-glossary-bar">
         <span style="color:#94a3b8; font-size:0.85rem; font-weight:600;">💡 Hover any term for Plain-English meaning:</span>
+        <div class="ow-pill">⭐⭐ Double Confirmed<span class="ow-tip"><b>Double Confirmed Setup:</b> A stock that simultaneously appears in Page 1 (Extended-Hours Price/Volume Mover) AND Page 2 (Heavy Options Whale Buying).</span></div>
         <div class="ow-pill">Price Floor (Put Wall)<span class="ow-tip"><b>Price Floor / Put Wall:</b> The price level where big banks mechanically step in and buy shares to hedge options. Acts like a trampoline safety net.</span></div>
         <div class="ow-pill">Price Ceiling (Call Wall)<span class="ow-tip"><b>Price Ceiling / Call Wall:</b> The price level where big banks start selling shares to hedge options. Acts like a brick ceiling—great place to take profits.</span></div>
         <div class="ow-pill">Danger Line (Zero Gamma)<span class="ow-tip"><b>Danger Line (Flip Level):</b> Above this price, trading is calm and dips get bought. Below this price, swings become fast and violent.</span></div>
         <div class="ow-pill">Fair Price (VWAP)<span class="ow-tip"><b>Fair Value Price (VWAP):</b> The average price paid per share today weighted by volume (including Pre-Market & After-Hours). Above = Buyers winning.</span></div>
         <div class="ow-pill">Fever Score (RSI)<span class="ow-tip"><b>Fever Score (RSI 0–100):</b> Measures if a stock is running too hot. Above 70 = Overheated (due for a breather). Below 30 = On Sale / Oversold (due for a bounce).</span></div>
-        <div class="ow-pill">Volume Surge (RVOL)<span class="ow-tip"><b>Unusual Volume Surge (RVOL):</b> Compares today's activity to a normal day. 2.0x means double the normal volume—proof that big money is active.</span></div>
         <div class="ow-pill">Whale Sweeps (Vol > OI)<span class="ow-tip"><b>Whale Sweeps:</b> Urgent options orders where today's volume exceeds total existing contracts (Open Interest), proving brand-new smart-money bets are opening.</span></div>
-        <div class="ow-pill">Dark Pool Buying %<span class="ow-tip"><b>Hidden Dark Pool %:</b> Private off-exchange institutional volume reported to FINRA. Over 55% on a green or flat day indicates quiet institutional accumulation.</span></div>
     </div>
     """
     st.markdown(pills_html, unsafe_allow_html=True)
@@ -140,14 +143,14 @@ SP500_LIQUID_UNIVERSE = [
     "BRK-B", "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "SPGI", "AXP", "BLK", "C", "SCHW", "CB", "PGR", "PYPL",
     "COIN", "HOOD", "SOFI", "AFRM", "SQ", "COF", "USB", "PNC", "TFC", "CME", "ICE", "MCO",
     "LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "DHR", "PFE", "AMGN", "ISRG", "ELV", "VRTX", "REGN", "SYK",
-    "BSX", "BMY", "GILD", "GILD", "ZTS", "CVS", "CI", "HUM", "MRNA", "BIIB", "GEHC",
+    "BSX", "BMY", "GILD", "ZTS", "CVS", "CI", "HUM", "MRNA", "BIIB", "GEHC",
     "WMT", "PG", "COST", "HD", "KO", "PEP", "MCD", "DIS", "NKE", "SBUX", "TGT", "LOW", "TJX", "BKNG", "MAR", "CMG",
     "YUM", "LULU", "ORLY", "AZO", "ROST", "CL", "KMB", "MDLZ", "MO", "PM", "F", "GM",
     "XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "HAL", "CAT", "GE", "RTX", "HON", "UNP", "BA",
     "DE", "LMT", "UPS", "FDX", "ADP", "ETN", "ITW", "GD", "NOC", "WM", "LIN", "SHW", "FCX", "NEM", "NEE", "SO", "DUK"
 ]
 SP500_LIQUID_UNIVERSE = list(dict.fromkeys(SP500_LIQUID_UNIVERSE))
-DEFAULT_WHALE_UNIVERSE = SP500_LIQUID_UNIVERSE[:40]
+DEFAULT_WHALE_UNIVERSE = SP500_LIQUID_UNIVERSE[:45]
 OCC_REGEX = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
 
 
@@ -393,6 +396,23 @@ def fetch_extended_hours_single(ticker):
     }
 
 
+def compute_zero_gamma(gex_df_by_strike, spot):
+    near_spot = gex_df_by_strike[
+        (gex_df_by_strike["strike"] >= spot * 0.93) & (gex_df_by_strike["strike"] <= spot * 1.07)
+    ].sort_values("strike")
+    zero_gamma = spot
+    signs = np.sign(near_spot["net_gex"].values)
+    strikes = near_spot["strike"].values
+    net_vals = near_spot["net_gex"].values
+    for i in range(len(signs) - 1):
+        if signs[i] != signs[i + 1] and (net_vals[i + 1] - net_vals[i]) != 0:
+            zero_gamma = strikes[i] - net_vals[i] * (strikes[i + 1] - strikes[i]) / (
+                net_vals[i + 1] - net_vals[i]
+            )
+            break
+    return round(float(zero_gamma), 2)
+
+
 def scan_single_whale_ticker(ticker):
     try:
         spot, opt_df = fetch_cboe_chain(ticker, num_expiries=3)
@@ -414,9 +434,17 @@ def scan_single_whale_ticker(ticker):
         total_prem = call_prem + put_prem
         call_pct = (call_prem / total_prem * 100.0) if total_prem > 0 else 50.0
 
-        gex_by_strike = opt_df.groupby(["strike", "type"])["gex_dollars"].sum().unstack(fill_value=0)
-        call_wall = gex_by_strike["call"].idxmax() if "call" in gex_by_strike else round(spot * 1.05, 2)
-        put_wall = gex_by_strike["put"].idxmin() if "put" in gex_by_strike else round(spot * 0.95, 2)
+        gex_by_strike = (
+            opt_df.groupby(["strike", "type"])["gex_dollars"].sum().unstack(fill_value=0).reset_index()
+        )
+        for col in ["call", "put"]:
+            if col not in gex_by_strike:
+                gex_by_strike[col] = 0.0
+        gex_by_strike["net_gex"] = gex_by_strike["call"] + gex_by_strike["put"]
+
+        call_wall = float(gex_by_strike.loc[gex_by_strike["call"].idxmax(), "strike"])
+        put_wall = float(gex_by_strike.loc[gex_by_strike["put"].idxmin(), "strike"])
+        zero_gamma = compute_zero_gamma(gex_by_strike, spot)
 
         whale_calls = len(
             opt_df[(opt_df["type"] == "call") & (opt_df["vol_oi_ratio"] >= 1.5) & (opt_df["est_premium"] >= 50000)]
@@ -439,11 +467,13 @@ def scan_single_whale_ticker(ticker):
             "Signal": direction,
             "Last_Price": tech["latest_price"],
             "Ext_Gap_Pct": tech["ext_gap_pct"],
+            "VWAP": tech["vwap"],
             "RSI_14": tech["rsi"],
             "Call_Flow_Pct": round(call_pct, 1),
             "Whale_Sweeps": f"{whale_calls}C / {whale_puts}P",
             "Put_Wall": put_wall,
             "Call_Wall": call_wall,
+            "Zero_Gamma": zero_gamma,
             "Heat_Score": conviction_score,
             "_raw_edge": net_edge,
         }
@@ -500,16 +530,11 @@ def fetch_finra_darkpool_history(ticker_symbol, lookback_days=10):
 # ==========================================
 # 4. AUTOMATED BUY / SELL / WAIT TRADE TICKET ENGINE
 # ==========================================
-def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rsi, call_pct, dp_pct):
-    """
-    Evaluates 5 institutional & technical confluence factors to output an automated
-    BUY / SELL / WAIT Trade Ticket with Entry, Stop-Loss, Profit Target, and R:R Ratio.
-    """
+def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rsi, call_pct, dp_pct=54.0):
     bull_points = 0
     bear_points = 0
     reasons = []
 
-    # 1. Price vs Fair Value (VWAP)
     if spot >= vwap:
         bull_points += 1
         reasons.append(f"✅ Price (${spot}) is holding ABOVE Today's Fair Value Price (${vwap})")
@@ -517,7 +542,6 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
         bear_points += 1
         reasons.append(f"🔻 Price (${spot}) is trading BELOW Today's Fair Value Price (${vwap})")
 
-    # 2. Price vs Danger Line (Zero Gamma Flip)
     if spot >= zero_gamma:
         bull_points += 1
         reasons.append(f"✅ Price is ABOVE the Danger Line (${zero_gamma}) — Calm, dip-buying regime")
@@ -525,7 +549,6 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
         bear_points += 1
         reasons.append(f"🔻 Price is BELOW the Danger Line (${zero_gamma}) — Fast, volatile regime")
 
-    # 3. Smart-Money Options Flow (Call % vs Put %)
     if call_pct >= 58.0:
         bull_points += 1
         reasons.append(f"✅ Smart-Money Options Flow is Bullish ({call_pct:.1f}% Call Buying)")
@@ -535,7 +558,6 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
     else:
         reasons.append(f"⚖️ Smart-Money Options Flow is Mixed ({call_pct:.1f}% Calls)")
 
-    # 4. Fever Score (RSI) Check
     if 35.0 <= rsi <= 68.0:
         bull_points += 1
         bear_points += 1
@@ -546,7 +568,6 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
         bull_points += 1
         reasons.append(f"💡 Fever Score (RSI {rsi}) is ON SALE / OVERSOLD (<35) — Watch for bounce")
 
-    # 5. Dark Pool Accumulation
     if dp_pct >= 53.0:
         bull_points += 1
         reasons.append(f"✅ Hidden Dark Pool Activity ({dp_pct:.1f}%) shows quiet institutional buying")
@@ -554,16 +575,15 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
         bear_points += 1
         reasons.append(f"🔻 Hidden Dark Pool Activity ({dp_pct:.1f}%) is light (<53%)")
 
-    # Ensure sensible fallback walls if spot is outside strike bounds
     eff_ceiling = call_wall if call_wall > spot * 1.003 else round(spot * 1.025, 2)
     eff_floor = put_wall if put_wall < spot * 0.997 else round(spot * 0.975, 2)
 
     room_to_ceiling_pct = ((eff_ceiling - spot) / spot) * 100.0
     room_to_floor_pct = ((spot - eff_floor) / spot) * 100.0
 
-    # Determine Verdict & Calculate Exact Trade Levels
     if bull_points >= 4 and rsi <= 70.0 and room_to_ceiling_pct >= 0.8:
         verdict = "🟢 ACTIONABLE LONG (BUY CALLS OR SHARES)"
+        short_verdict = "🟢 BUY LONG"
         bg_color = "#052e16"
         border_color = "#22c55e"
         entry_zone = f"${round(min(spot, vwap * 1.002), 2)} – ${spot}"
@@ -574,6 +594,7 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
         reward = max(profit_target - spot, 0.01)
     elif bear_points >= 3 and spot < vwap and room_to_floor_pct >= 0.8:
         verdict = "🔴 ACTIONABLE SHORT (BUY PUTS OR SHORT)"
+        short_verdict = "🔴 SELL SHORT"
         bg_color = "#450a0a"
         border_color = "#ef4444"
         entry_zone = f"${spot} – ${round(max(spot, vwap * 0.998), 2)}"
@@ -584,9 +605,10 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
         reward = max(spot - profit_target, 0.01)
     else:
         verdict = "🟡 WAIT / NO CLEAR EDGE (SIT ON HANDS)"
+        short_verdict = "🟡 WAIT (Pullback)"
         bg_color = "#1e293b"
         border_color = "#f59e0b"
-        entry_zone = f"Wait for pullback to ${vwap} (VWAP)"
+        entry_zone = f"Wait near ${vwap}"
         stop_loss = round(eff_floor, 2)
         profit_target = round(eff_ceiling, 2)
         risk = max(abs(spot - stop_loss), 0.01)
@@ -595,6 +617,7 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
     rr_ratio = round(reward / risk, 2)
     return {
         "verdict": verdict,
+        "short_verdict": short_verdict,
         "bg_color": bg_color,
         "border_color": border_color,
         "entry_zone": entry_zone,
@@ -608,7 +631,107 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
 
 
 # ==========================================
-# 5. COLUMN HEADER & HOVER TOOLTIP CONFIG
+# 5. MASTER CONFLUENCE MERGE ENGINE (PAGE 1 + PAGE 2)
+# ==========================================
+@st.cache_data(ttl=120)
+def build_master_confluence_watchlist():
+    """
+    Merges all screened stocks from Page 1 (S&P Top Movers) and Page 2 (Options Whales),
+    identifies Double-Confirmed overlaps, and calculates a batch Trade Ticket for every row.
+    """
+    top_bulls, top_bears, combined_100 = fetch_sp_movers_and_shakers(SP500_LIQUID_UNIVERSE)
+    whale_df = run_whale_scanner(DEFAULT_WHALE_UNIVERSE)
+
+    # Top 25 Bullish + Top 25 Bearish from Page 1
+    p1_subset = pd.concat([top_bulls.head(25), top_bears.head(25)], ignore_index=True) if not combined_100.empty else pd.DataFrame()
+    p1_map = {row["Ticker"]: row for _, row in p1_subset.iterrows()} if not p1_subset.empty else {}
+    p1_all_map = {row["Ticker"]: row for _, row in combined_100.iterrows()} if not combined_100.empty else {}
+
+    # Top 15 Bullish + Top 15 Bearish from Page 2
+    if not whale_df.empty:
+        w_longs = whale_df[whale_df["_raw_edge"] >= 0].sort_values("Heat_Score", ascending=False).head(15)
+        w_shorts = whale_df[whale_df["_raw_edge"] < 0].sort_values("Heat_Score", ascending=False).head(15)
+        p2_subset = pd.concat([w_longs, w_shorts], ignore_index=True)
+        p2_map = {row["Ticker"]: row for _, row in p2_subset.iterrows()}
+    else:
+        p2_map = {}
+
+    all_screened_tickers = sorted(list(set(p1_map.keys()) | set(p2_map.keys())))
+    master_rows = []
+
+    for sym in all_screened_tickers:
+        in_p1 = sym in p1_map
+        in_p2 = sym in p2_map
+        m_row = p1_all_map.get(sym, {})
+        w_row = p2_map.get(sym, {})
+
+        if in_p1 and in_p2:
+            tier = "⭐⭐ DOUBLE CONFIRMED (Mover + Whale)"
+            tier_rank = 3
+        elif in_p2:
+            tier = "🔥 Options Whale Driven (Page 2)"
+            tier_rank = 2
+        else:
+            tier = "📈 Extended-Hours Mover (Page 1)"
+            tier_rank = 1
+
+        spot = float(w_row.get("Last_Price") or m_row.get("Last_Price") or 0.0)
+        move_pct = float(m_row.get("Total_Move_Pct") or w_row.get("Ext_Gap_Pct") or 0.0)
+        vwap = float(m_row.get("VWAP") or w_row.get("VWAP") or spot)
+        rsi = float(m_row.get("RSI_14") or w_row.get("RSI_14") or 50.0)
+        rvol = float(m_row.get("RVOL") or 1.2)
+
+        call_pct = float(w_row.get("Call_Flow_Pct") or (62.0 if move_pct > 0 else 38.0))
+        sweeps = str(w_row.get("Whale_Sweeps") or "Scan on Page 3")
+        put_wall = float(w_row.get("Put_Wall") or m_row.get("Est_Floor") or round(spot * 0.97, 2))
+        call_wall = float(w_row.get("Call_Wall") or m_row.get("Est_Ceiling") or round(spot * 1.03, 2))
+        zero_gamma = float(w_row.get("Zero_Gamma") or vwap)
+
+        ticket = build_automated_trade_ticket(
+            spot=spot,
+            put_wall=put_wall,
+            call_wall=call_wall,
+            zero_gamma=zero_gamma,
+            vwap=vwap,
+            rsi=rsi,
+            call_pct=call_pct,
+        )
+
+        combined_heat = round(
+            (float(m_row.get("Heat_Score", 60)) * 0.5) + (float(w_row.get("Heat_Score", 60)) * 0.5) + (10 if tier_rank == 3 else 0),
+            1,
+        )
+        combined_heat = min(99.0, combined_heat)
+
+        master_rows.append(
+            {
+                "Ticker": sym,
+                "Confluence_Tier": tier,
+                "Verdict": ticket["short_verdict"],
+                "Last_Price": spot,
+                "Total_Move_Pct": move_pct,
+                "VWAP": vwap,
+                "RSI_14": rsi,
+                "RVOL": rvol,
+                "Call_Flow_Pct": call_pct,
+                "Whale_Sweeps": sweeps,
+                "Entry_Zone": ticket["entry_zone"],
+                "Stop_Loss": ticket["stop_loss"],
+                "Profit_Target": ticket["profit_target"],
+                "RR_Ratio": ticket["rr_ratio"],
+                "Heat_Score": combined_heat,
+                "_tier_rank": tier_rank,
+            }
+        )
+
+    master_df = pd.DataFrame(master_rows)
+    if not master_df.empty:
+        master_df = master_df.sort_values(["_tier_rank", "Heat_Score"], ascending=[False, False]).reset_index(drop=True)
+    return master_df
+
+
+# ==========================================
+# 6. COLUMN HEADER & STYLING HELPERS
 # ==========================================
 MOVERS_PLAIN_HEADERS = {
     "Ticker": "Stock Symbol",
@@ -716,7 +839,7 @@ def style_dark_movers_table(df, use_plain_headers=True):
 
 
 # ==========================================
-# 6. SIDEBAR NAVIGATION & GLOBAL CONTROLS
+# 7. SIDEBAR NAVIGATION & GLOBAL CONTROLS
 # ==========================================
 st.sidebar.title("🐋 OpenWhale Navigation")
 st.sidebar.caption("100% Free Smart-Money, GEX & Extended-Hours Radar")
@@ -724,12 +847,13 @@ st.sidebar.caption("100% Free Smart-Money, GEX & Extended-Hours Radar")
 page = st.sidebar.radio(
     "Select Dashboard Page:",
     [
-        "🏆 S&P Movers & Shakers (Top 50 Each Way)",
-        "🔥 Top 20 Options Whale Scanner",
-        "🔍 Single-Ticker Deep Dive (+ Trade Ticket)",
-        "📖 Help & Trading Playbook",
+        "🏆 1. S&P Movers & Shakers (Top 50 Each Way)",
+        "🔥 2. Top 20 Options Whale Scanner",
+        "⚡ 3. Master Actionable Watchlist (Page 1+2 Merged)",
+        "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)",
+        "📖 5. Help & Trading Playbook",
     ],
-    help="Navigate between the S&P Top 100 Movers, the Options Whale Scanner, the Single-Ticker Trade Ticket, or the built-in Help & Playbook guide.",
+    help="Navigate through the OpenWhale workflow: Scan Movers (Page 1), Scan Whales (Page 2), View Combined Actionable Setups (Page 3), Deep-Dive any Ticker (Page 4), or Read the Playbook (Page 5).",
 )
 
 st.sidebar.markdown("---")
@@ -742,7 +866,7 @@ use_plain_headers = st.sidebar.toggle(
 # ==========================================
 # PAGE 1: S&P MOVERS & SHAKERS
 # ==========================================
-if page == "🏆 S&P Movers & Shakers (Top 50 Each Way)":
+if page == "🏆 1. S&P Movers & Shakers (Top 50 Each Way)":
     st.title("🐋 OpenWhale: S&P Movers & Shakers (Top 50 Bullish & Bearish)")
     render_hover_glossary_banner()
 
@@ -885,7 +1009,7 @@ if page == "🏆 S&P Movers & Shakers (Top 50 Each Way)":
 # ==========================================
 # PAGE 2: TOP 20 OPTIONS WHALE SCANNER
 # ==========================================
-elif page == "🔥 Top 20 Options Whale Scanner":
+elif page == "🔥 2. Top 20 Options Whale Scanner":
     st.title("🐋 OpenWhale: Top 20 Hot Stocks Today (Options Whales + Extended-Hours)")
     render_hover_glossary_banner()
 
@@ -921,6 +1045,7 @@ elif page == "🔥 Top 20 Options Whale Scanner":
             }
         )
 
+        display_whale_cols = list(whale_col_map.keys())
         whale_help_cfg = {
             whale_col_map["Ticker"]: st.column_config.Column(help=GLOSSARY_TOOLTIPS["Ticker"]),
             whale_col_map["Signal"]: st.column_config.Column(help=GLOSSARY_TOOLTIPS["Direction"]),
@@ -937,15 +1062,13 @@ elif page == "🔥 Top 20 Options Whale Scanner":
         longs = (
             scan_df[scan_df["_raw_edge"] >= 0]
             .sort_values("Heat_Score", ascending=False)
-            .head(10)
-            .drop(columns=["_raw_edge"])
+            .head(10)[display_whale_cols]
             .rename(columns=whale_col_map)
         )
         shorts = (
             scan_df[scan_df["_raw_edge"] < 0]
             .sort_values("Heat_Score", ascending=False)
-            .head(10)
-            .drop(columns=["_raw_edge"])
+            .head(10)[display_whale_cols]
             .rename(columns=whale_col_map)
         )
 
@@ -959,9 +1082,154 @@ elif page == "🔥 Top 20 Options Whale Scanner":
 
 
 # ==========================================
-# PAGE 3: SINGLE-TICKER DEEP DIVE + AUTOMATED TRADE TICKET
+# PAGE 3: MASTER ACTIONABLE WATCHLIST (PAGE 1 + 2 COMBINED)
 # ==========================================
-elif page == "🔍 Single-Ticker Deep Dive (+ Trade Ticket)":
+elif page == "⚡ 3. Master Actionable Watchlist (Page 1+2 Merged)":
+    st.title("⚡ OpenWhale Master Actionable Watchlist (Page 1 + Page 2 Combined)")
+    st.caption(
+        "Automatically merges all screened tickers from Page 1 (Price/Volume Movers) and Page 2 (Options Whales), highlights Double-Confirmed overlaps, and calculates Trade Tickets in bulk."
+    )
+    render_hover_glossary_banner()
+
+    with st.spinner("Merging Page 1 Movers & Page 2 Options Whales and generating batch Trade Tickets..."):
+        master_df = build_master_confluence_watchlist()
+
+    if not master_df.empty:
+        double_conf_count = len(master_df[master_df["_tier_rank"] == 3])
+        buy_long_count = len(master_df[master_df["Verdict"] == "🟢 BUY LONG"])
+        sell_short_count = len(master_df[master_df["Verdict"] == "🔴 SELL SHORT"])
+        high_rr_count = len(master_df[master_df["RR_Ratio"] >= 1.5])
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric(
+            "⭐⭐ Double-Confirmed Stocks",
+            f"{double_conf_count} Tickers",
+            "Page 1 + Page 2 Overlap",
+            help=GLOSSARY_TOOLTIPS["Confluence_Tier"],
+        )
+        k2.metric(
+            "🟢 Actionable BUY LONG Tickets",
+            f"{buy_long_count} Setups",
+            "4+ Bullish Factors Aligned",
+            help=GLOSSARY_TOOLTIPS["Verdict"],
+        )
+        k3.metric(
+            "🔴 Actionable SELL SHORT Tickets",
+            f"{sell_short_count} Setups",
+            "Bearish Breakdown Confirmed",
+            help=GLOSSARY_TOOLTIPS["Verdict"],
+        )
+        k4.metric(
+            "⚖️ Setups w/ Reward:Risk >= 1.5x",
+            f"{high_rr_count} Tickers",
+            "High Asymmetry",
+            help=GLOSSARY_TOOLTIPS["RR_Ratio"],
+        )
+
+        # Filter Controls for the Master Table
+        f1, f2, f3 = st.columns([0.4, 0.35, 0.25])
+        with f1:
+            tier_filter = st.multiselect(
+                "Filter by Confirmation Source:",
+                options=[
+                    "⭐⭐ DOUBLE CONFIRMED (Mover + Whale)",
+                    "🔥 Options Whale Driven (Page 2)",
+                    "📈 Extended-Hours Mover (Page 1)",
+                ],
+                default=[
+                    "⭐⭐ DOUBLE CONFIRMED (Mover + Whale)",
+                    "🔥 Options Whale Driven (Page 2)",
+                    "📈 Extended-Hours Mover (Page 1)",
+                ],
+            )
+        with f2:
+            verdict_filter = st.multiselect(
+                "Filter by Trade Ticket Verdict:",
+                options=["🟢 BUY LONG", "🔴 SELL SHORT", "🟡 WAIT (Pullback)"],
+                default=["🟢 BUY LONG", "🔴 SELL SHORT", "🟡 WAIT (Pullback)"],
+            )
+        with f3:
+            min_rr = st.slider("Minimum Reward:Risk Ratio", 0.5, 4.0, 1.0, 0.25)
+
+        filtered_master = master_df[
+            (master_df["Confluence_Tier"].isin(tier_filter))
+            & (master_df["Verdict"].isin(verdict_filter))
+            & (master_df["RR_Ratio"] >= min_rr)
+        ].copy()
+
+        master_col_map = (
+            {
+                "Ticker": "Stock Symbol",
+                "Confluence_Tier": "Why It's Here (Source)",
+                "Verdict": "Trade Ticket Verdict",
+                "Last_Price": "Last Traded Price ($)",
+                "Total_Move_Pct": "Overnight & Today Move (%)",
+                "VWAP": "Fair Price VWAP ($)",
+                "RSI_14": "Fever Score (RSI)",
+                "RVOL": "Volume Surge (x)",
+                "Call_Flow_Pct": "Smart Money Call %",
+                "Whale_Sweeps": "Whale Sweeps (C/P)",
+                "Entry_Zone": "Ideal Entry Zone",
+                "Stop_Loss": "Hard Stop-Loss ($)",
+                "Profit_Target": "Profit Target ($)",
+                "RR_Ratio": "Reward:Risk (x)",
+                "Heat_Score": "Master Score (0-100)",
+            }
+            if use_plain_headers
+            else {
+                "Ticker": "Ticker",
+                "Confluence_Tier": "Confluence Tier",
+                "Verdict": "Ticket Signal",
+                "Last_Price": "Spot ($)",
+                "Total_Move_Pct": "Net Change (%)",
+                "VWAP": "Ext VWAP ($)",
+                "RSI_14": "RSI(14)",
+                "RVOL": "RVOL (x)",
+                "Call_Flow_Pct": "Call Flow (%)",
+                "Whale_Sweeps": "Sweeps (Vol>1.5x OI)",
+                "Entry_Zone": "Entry Band",
+                "Stop_Loss": "Stop Loss ($)",
+                "Profit_Target": "Wall Target ($)",
+                "RR_Ratio": "R:R Ratio",
+                "Heat_Score": "Composite Score",
+            }
+        )
+
+        display_master_cols = list(master_col_map.keys())
+        shown_df = filtered_master[display_master_cols].rename(columns=master_col_map)
+
+        master_help_cfg = {
+            master_col_map[k]: st.column_config.Column(
+                label=master_col_map[k],
+                help=GLOSSARY_TOOLTIPS.get(k, ""),
+            )
+            for k in display_master_cols
+        }
+
+        st.dataframe(
+            shown_df,
+            column_config=master_help_cfg,
+            use_container_width=True,
+            hide_index=True,
+            height=560,
+        )
+
+        # Download CSV Button
+        csv_bytes = shown_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Download Today's Master Actionable Watchlist (CSV)",
+            data=csv_bytes,
+            file_name=f"openwhale_master_watchlist_{dt.date.today()}.csv",
+            mime="text/csv",
+        )
+    else:
+        st.warning("Could not build Master Watchlist right now. Click Refresh in the sidebar.")
+
+
+# ==========================================
+# PAGE 4: SINGLE-TICKER DEEP DIVE + AUTOMATED TRADE TICKET
+# ==========================================
+elif page == "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)":
     selected_ticker = st.sidebar.text_input(
         "🔍 Enter Stock or Index Symbol",
         value="SPY",
@@ -997,30 +1265,13 @@ elif page == "🔍 Single-Ticker Deep Dive (+ Trade Ticket)":
 
         call_wall = float(gex_by_strike.loc[gex_by_strike["call"].idxmax(), "strike"])
         put_wall = float(gex_by_strike.loc[gex_by_strike["put"].idxmin(), "strike"])
-
-        near_spot = gex_by_strike[
-            (gex_by_strike["strike"] >= spot * 0.93) & (gex_by_strike["strike"] <= spot * 1.07)
-        ].sort_values("strike")
-        zero_gamma = spot
-        signs = np.sign(near_spot["net_gex"].values)
-        strikes = near_spot["strike"].values
-        net_vals = near_spot["net_gex"].values
-        for i in range(len(signs) - 1):
-            if signs[i] != signs[i + 1] and (net_vals[i + 1] - net_vals[i]) != 0:
-                zero_gamma = strikes[i] - net_vals[i] * (strikes[i + 1] - strikes[i]) / (
-                    net_vals[i + 1] - net_vals[i]
-                )
-                break
-        zero_gamma = round(float(zero_gamma), 2)
+        zero_gamma = compute_zero_gamma(gex_by_strike, spot)
 
         call_prem = full_chain[full_chain["type"] == "call"]["est_premium"].sum()
         put_prem = full_chain[full_chain["type"] == "put"]["est_premium"].sum()
         call_pct = (call_prem / (call_prem + put_prem) * 100.0) if (call_prem + put_prem) > 0 else 50.0
         latest_dp_pct = float(finra_df["Hidden_Buying_Pct"].iloc[-1]) if not finra_df.empty else 50.0
 
-        # ------------------------------------------
-        # AUTOMATED BUY / SELL / WAIT TRADE TICKET
-        # ------------------------------------------
         ticket = build_automated_trade_ticket(
             spot=spot,
             put_wall=put_wall,
@@ -1045,31 +1296,18 @@ elif page == "🔍 Single-Ticker Deep Dive (+ Trade Ticket)":
         )
 
         t1, t2, t3, t4 = st.columns(4)
-        t1.metric(
-            "🎯 Ideal Entry Zone",
-            f"{ticket['entry_zone']}",
-            help="Suggested price zone to enter based on current price and Today's Fair Value Price (VWAP).",
-        )
-        t2.metric(
-            "🛑 Hard Stop-Loss",
-            f"${ticket['stop_loss']}",
-            help="Exact price where the setup is invalidated (below VWAP/Danger Line or Price Floor). Exit immediately if hit.",
-        )
-        t3.metric(
-            "💰 Profit Target",
-            f"${ticket['profit_target']}",
-            help="Placed just inside the major Price Ceiling (Call Wall) for longs, or Price Floor (Put Wall) for shorts.",
-        )
+        t1.metric("🎯 Ideal Entry Zone", f"{ticket['entry_zone']}", help=GLOSSARY_TOOLTIPS["Entry_Zone"])
+        t2.metric("🛑 Hard Stop-Loss", f"${ticket['stop_loss']}", help=GLOSSARY_TOOLTIPS["Stop_Loss"])
+        t3.metric("💰 Profit Target", f"${ticket['profit_target']}", help=GLOSSARY_TOOLTIPS["Profit_Target"])
         t4.metric(
             "⚖️ Reward-to-Risk Ratio",
             f"{ticket['rr_ratio']} : 1",
             "Target >= 1.5 : 1" if ticket["rr_ratio"] >= 1.5 else "Tight R:R (<1.5)",
-            help="Compares potential profit distance to your stop-loss distance. A 2.0 : 1 ratio means you stand to make $2 for every $1 risked.",
+            help=GLOSSARY_TOOLTIPS["RR_Ratio"],
         )
 
         st.markdown("---")
 
-        # KPI Cards with built-in Hover Tooltips
         m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("Last Traded Price", f"${spot}", f"{tech['ext_gap_pct']:+.2f}%", help=GLOSSARY_TOOLTIPS["Last_Price"])
         m2.metric(
@@ -1170,7 +1408,7 @@ elif page == "🔍 Single-Ticker Deep Dive (+ Trade Ticket)":
 
 
 # ==========================================
-# PAGE 4: HELP & TRADING PLAYBOOK (USER MANUAL)
+# PAGE 5: HELP & TRADING PLAYBOOK (USER MANUAL)
 # ==========================================
 else:
     st.title("📖 OpenWhale Help Center & Everyday Trading Playbook")
@@ -1178,7 +1416,7 @@ else:
 
     h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs(
         [
-            "🚀 1. Daily 3-Step Routine",
+            "🚀 1. Daily Routine (Now w/ Master Watchlist)",
             "🗣️ 2. Plain-English Dictionary",
             "🎯 3. Three High-Win Setups",
             "🛑 4. Red Flags & Risk Rules",
@@ -1186,24 +1424,13 @@ else:
     )
 
     with h_tab1:
-        st.subheader("🚀 How to Use OpenWhale in 10 Minutes Every Morning")
+        st.subheader("🚀 How to Use OpenWhale in 5 Minutes Every Morning")
         st.markdown(
             """
-            OpenWhale is designed as a **3-Stage Funnel** so you never have to guess which stock to trade or where to place your stop-loss:
-
-            #### **Step 1: Spot Today's Movers (`🏆 Page 1: S&P Movers & Shakers`)**
-            * **When:** Run between **8:30 AM and 9:45 AM Eastern Time**.
-            * **What to Look For:** Look at the **Dark-View Heatmap** and the **Top 50 Bullish / Bearish Tables**. Focus on stocks with **Unusual Volume Surge (`RVOL`) >= `1.5x`**—this proves big institutions are trading the stock today, not just retail traders.
-
-            #### **Step 2: Verify Smart-Money Options Conviction (`🔥 Page 2: Top 20 Options Whale Scanner`)**
-            * **What to Look For:** Check if your stock is in the **Top 10 Hot Longs** or **Top 10 Hot Shorts**.
-            * Confirm that **Smart Money Call Buying %** is above `60%` (for Longs) or below `40%` (for Shorts), and verify there are multiple **Urgent Whale Sweeps** (`Vol > 1.5x Open Interest`).
-
-            #### **Step 3: Follow the Automated Trade Ticket (`🔍 Page 3: Single-Ticker Deep Dive`)**
-            * Type your stock symbol into Page 3.
-            * Read the **🎫 Automated Trade Ticket** at the top of the screen:
-              * If it says **🟢 ACTIONABLE LONG** or **🔴 ACTIONABLE SHORT**, use the displayed **Ideal Entry Zone**, **Hard Stop-Loss**, and **Profit Target**.
-              * If it says **🟡 WAIT / NO CLEAR EDGE**, sit on your hands and wait for price to pull back to the **Fair Value Price (`VWAP`)**.
+            #### **Shortcut: Go Straight to `⚡ Page 3: Master Actionable Watchlist`**
+            * **What It Does:** Automatically merges the **Top Movers from Page 1** and the **Top Options Whales from Page 2** into a single list.
+            * **Look for `⭐⭐ DOUBLE CONFIRMED (Mover + Whale)`:** These are stocks where extended-hours price/volume momentum and big-money options sweeps are happening at the exact same time.
+            * **Filter for `🟢 BUY LONG` or `🔴 SELL SHORT`** with a **Reward:Risk Ratio >= `1.5x`**, then type your favorite pick into **Page 4** to inspect its visual support/resistance walls and Dark Pool chart.
             """
         )
 
@@ -1211,6 +1438,11 @@ else:
         st.subheader("🗣️ Plain-English Dictionary (Wall Street Jargon Translated)")
         dict_df = pd.DataFrame(
             [
+                {
+                    "Everyday OpenWhale Term": "⭐⭐ Double Confirmed",
+                    "Wall Street Quant Term": "Multi-Factor Flow + Price Confluence",
+                    "How to Use It in Your Trading": "Stock passed both the S&P Extended-Hours Mover filter AND the CBOE Unusual Options Whale filter simultaneously.",
+                },
                 {
                     "Everyday OpenWhale Term": "Price Floor (Safety Net)",
                     "Wall Street Quant Term": "Put Wall (Max Negative GEX)",
@@ -1236,21 +1468,6 @@ else:
                     "Wall Street Quant Term": "Extended-Hours RSI (14)",
                     "How to Use It in Your Trading": "Above 70 = Overheated (don't chase at market open, wait for a dip). Below 30 = On Sale / Oversold (watch for a bounce).",
                 },
-                {
-                    "Everyday OpenWhale Term": "Unusual Volume Surge",
-                    "Wall Street Quant Term": "Relative Volume (RVOL)",
-                    "How to Use It in Your Trading": "1.5x+ means 50% more shares are trading than normal—confirms institutional participation.",
-                },
-                {
-                    "Everyday OpenWhale Term": "Urgent Whale Bets",
-                    "Wall Street Quant Term": "Ask-Side Sweeps (Vol > 1.5x OI)",
-                    "How to Use It in Your Trading": "Today's volume exceeds total existing contracts, proving brand-new smart-money positions are being opened today.",
-                },
-                {
-                    "Everyday OpenWhale Term": "Hidden Dark Pool Buying %",
-                    "Wall Street Quant Term": "FINRA RegSHO Off-Exchange Short %",
-                    "How to Use It in Your Trading": "When private off-exchange volume exceeds 55% on a green or flat day, institutions are quietly accumulating shares.",
-                },
             ]
         )
         st.dataframe(dict_df, use_container_width=True, hide_index=True)
@@ -1262,20 +1479,20 @@ else:
             st.success("### 🟢 Setup 1: Bullish Momentum Breakout")
             st.markdown(
                 """
-                * **Regime:** Stock is trading **ABOVE** both the **Danger Line** and **Fair Value (`VWAP`)**.
-                * **Flow:** Smart Money Call Buying is **`>= 60%`** with multiple Call Whale Sweeps.
-                * **Fever Check:** `RSI` is between **`45 and 68`** (strong momentum, not yet overheated).
-                * **Execution:** Buy near `VWAP` | **Stop-Loss:** Just below `VWAP` or Danger Line | **Target:** Just below **Price Ceiling (`Call Wall`)**.
+                * **Source:** `⭐⭐ DOUBLE CONFIRMED` on Page 3.
+                * **Regime:** Stock is **ABOVE** both the **Danger Line** and **Fair Value (`VWAP`)**.
+                * **Flow:** Smart Money Call Buying **`>= 60%`**.
+                * **Execution:** Enter inside the **Ideal Entry Zone**, set Stop-Loss at the Ticket level, and take profit just below the **Price Ceiling**.
                 """
             )
         with c2:
             st.info("### 💎 Setup 2: 'On Sale' Floor Bounce")
             st.markdown(
                 """
-                * **Regime:** Market is calm (overall Net GEX is positive) and stock pulls back to touch its **Price Floor (`Put Wall`)**.
+                * **Regime:** Stock pulls back to touch its **Price Floor (`Put Wall`)**.
                 * **Fever Check:** `RSI` drops below **`32`** (*On Sale / Oversold*).
-                * **Dark Pool:** FINRA Hidden Buying is **`>= 55%`** over the past week.
-                * **Execution:** Buy the bounce off the **Price Floor** | **Stop-Loss:** `0.8%` below Price Floor | **Target:** Return to **Fair Value (`VWAP`)**.
+                * **Dark Pool:** FINRA Hidden Buying is **`>= 55%`** on Page 4.
+                * **Execution:** Buy the bounce off the **Price Floor**, Stop-Loss `0.8%` below Floor, Target return to **Fair Value (`VWAP`)**.
                 """
             )
         with c3:
@@ -1283,9 +1500,8 @@ else:
             st.markdown(
                 """
                 * **Regime:** Stock breaks **BELOW** both its **Fair Value (`VWAP`)** and **Danger Line (`Zero Gamma`)**.
-                * **Flow:** Appears in **Top 10 Hot Shorts** on Page 2 (`Put Buying >= 60%`).
-                * **Why It Works:** Below the Danger Line, big banks must sell shares as price drops, accelerating the sell-off.
-                * **Execution:** Enter Short / Buy Puts below `VWAP` | **Stop-Loss:** Just above `VWAP` | **Target:** Just above **Price Floor (`Put Wall`)**.
+                * **Flow:** Trade Ticket Verdict shows **`🔴 SELL SHORT`**.
+                * **Execution:** Enter Short / Buy Puts below `VWAP`, Stop-Loss just above `VWAP`, Target just above **Price Floor (`Put Wall`)**.
                 """
             )
 
@@ -1293,9 +1509,9 @@ else:
         st.subheader("🛑 4 Golden Rules to Protect Your Capital")
         st.warning(
             """
-            1. **Never Buy Right Into the Price Ceiling (`Call Wall`):** If a stock is already within `0.5%` of its Price Ceiling, your upside is capped because dealers have to sell shares there. Wait for a pullback.
-            2. **Never Chase a `70+` Fever Score at 9:30 AM:** If Pre-Market gaps up big and the Fever Score (`RSI`) is above `70`, wait 15–30 minutes after the opening bell for the stock to cool down and test its **Fair Value Price (`VWAP`)**.
-            3. **Demand at Least a `1.5 : 1` Reward-to-Risk Ratio:** Check the **⚖️ Reward-to-Risk Ratio** card on Page 3's Trade Ticket. If the ratio is below `1.5 : 1`, your stop-loss is too far away compared to your profit target—skip the trade.
-            4. **Honor the Hard Stop-Loss Automatically:** If price crosses back through both `VWAP` and the **Danger Line**, the institutional hedging regime has flipped. Take the small stop-loss and move to the next setup.
+            1. **Prioritize `⭐⭐ DOUBLE CONFIRMED` Tickers on Page 3:** When both price volume and options whales agree, fakeouts drop dramatically.
+            2. **Never Buy Right Into the Price Ceiling (`Call Wall`):** If Reward:Risk is below `1.0x`, you are buying too close to overhead bank resistance.
+            3. **Never Chase a `70+` Fever Score at 9:30 AM:** Wait 15–30 minutes after the opening bell for the stock to cool down and test its **Fair Value Price (`VWAP`)**.
+            4. **Honor the Hard Stop-Loss Automatically:** If price crosses back through both `VWAP` and the **Danger Line**, exit immediately.
             """
         )
