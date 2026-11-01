@@ -930,12 +930,24 @@ def style_dark_movers_table(df, use_plain_headers=True):
 st.sidebar.title("🐋 OpenWhale Navigation")
 st.sidebar.caption("100% Free Smart-Money, GEX & Extended-Hours Radar")
 
-page = st.sidebar.radio(
+# Initialize nav_page in session state if missing
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = PAGES[0]
+
+# Render radio without a conflicting widget 'key'
+selected_page = st.sidebar.radio(
     "Select Dashboard Page:",
     PAGES,
-    key="nav_page",
+    index=PAGES.index(st.session_state.nav_page) if st.session_state.nav_page in PAGES else 0,
     help="Click any row in Page 1, 2, or 3 to automatically jump to Page 4 (Deep-Dive & Trade Ticket) for that ticker!",
 )
+
+# Update session state if user manually clicks a new page in the sidebar
+if selected_page != st.session_state.nav_page:
+    st.session_state.nav_page = selected_page
+    st.rerun()
+
+page = st.session_state.nav_page
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"**🎯 Currently Linked Ticker:** `{st.session_state.active_ticker}`")
