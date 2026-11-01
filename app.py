@@ -155,7 +155,6 @@ def render_hover_glossary_banner():
 
 
 def render_quick_jump_bar(available_tickers, key_prefix):
-    """Renders a 1-click ticker linker bar on every scanner page."""
     if not available_tickers:
         return
     c1, c2 = st.columns([0.72, 0.28])
@@ -184,7 +183,7 @@ def render_quick_jump_bar(available_tickers, key_prefix):
 
 
 # ==========================================
-# S&P 500 + MAJOR INDICES LIQUID UNIVERSE (~125 TICKERS)
+# S&P 500 + MAJOR INDICES LIQUID UNIVERSE
 # ==========================================
 SP500_LIQUID_UNIVERSE = [
     "SPY", "QQQ", "IWM", "DIA", "SMH", "XLF", "XLE", "XLK", "XLV", "XLI", "XLY", "XLP", "XLU", "ARKK", "GLD", "TLT",
@@ -204,9 +203,6 @@ SP500_LIQUID_UNIVERSE = list(dict.fromkeys(SP500_LIQUID_UNIVERSE))
 OCC_REGEX = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
 
 
-# ==========================================
-# 1. TECHNICAL INDICATOR HELPERS
-# ==========================================
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0).rolling(window=period).mean()
@@ -216,9 +212,6 @@ def compute_rsi(series, period=14):
     return pd.Series(rsi, index=series.index)
 
 
-# ==========================================
-# 2. BATCH S&P MOVERS & SHAKERS ENGINE (PAGE 1)
-# ==========================================
 @st.cache_data(ttl=120)
 def fetch_sp_movers_and_shakers(tickers):
     intraday_raw = yf.download(
@@ -320,9 +313,6 @@ def fetch_sp_movers_and_shakers(tickers):
     return top_50_bulls, top_50_bears, combined_100
 
 
-# ==========================================
-# 3. CBOE OPTIONS & WHALE ENGINE (LINKED TO PAGE 1)
-# ==========================================
 def calc_bs_gamma(S, K, T, r, sigma):
     T = np.maximum(T, 4 / (365 * 24))
     sigma = np.maximum(sigma, 0.01)
@@ -466,10 +456,6 @@ def compute_zero_gamma(gex_df_by_strike, spot):
 
 
 def scan_single_whale_ticker(ticker, precomputed_tech=None):
-    """
-    Reuses Page 1's precomputed price/VWAP/RSI data when available so Page 1, Page 2,
-    and Page 3 are 100% linked and synchronized!
-    """
     try:
         spot, opt_df = fetch_cboe_chain(ticker, num_expiries=3)
         if precomputed_tech is not None:
@@ -543,11 +529,6 @@ def scan_single_whale_ticker(ticker, precomputed_tech=None):
 
 @st.cache_data(ttl=120)
 def run_linked_whale_scanner():
-    """
-    Dynamically links Page 1 -> Page 2:
-    Takes the Top 30 Bullish Movers + Top 30 Bearish Movers from Page 1 (+ Core Indices)
-    and scans all of them for CBOE Options Whale Activity!
-    """
     top_bulls, top_bears, combined_100 = fetch_sp_movers_and_shakers(SP500_LIQUID_UNIVERSE)
 
     tech_lookup = {}
@@ -615,9 +596,6 @@ def fetch_finra_darkpool_history(ticker_symbol, lookback_days=10):
     return pd.DataFrame(records).sort_values("Date") if records else pd.DataFrame()
 
 
-# ==========================================
-# 4. AUTOMATED BUY / SELL / WAIT TRADE TICKET ENGINE
-# ==========================================
 def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rsi, call_pct, dp_pct=54.0):
     bull_points = 0
     bear_points = 0
@@ -718,20 +696,15 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
     }
 
 
-# ==========================================
-# 5. MASTER CONFLUENCE MERGE ENGINE (PAGE 1 + PAGE 2)
-# ==========================================
 @st.cache_data(ttl=120)
 def build_master_confluence_watchlist():
     top_bulls, top_bears, combined_100 = fetch_sp_movers_and_shakers(SP500_LIQUID_UNIVERSE)
     whale_df = run_linked_whale_scanner()
 
-    # Top 30 Bullish + Top 30 Bearish from Page 1
     p1_subset = pd.concat([top_bulls.head(30), top_bears.head(30)], ignore_index=True) if not combined_100.empty else pd.DataFrame()
     p1_map = {row["Ticker"]: row for _, row in p1_subset.iterrows()} if not p1_subset.empty else {}
     p1_all_map = {row["Ticker"]: row for _, row in combined_100.iterrows()} if not combined_100.empty else {}
 
-    # All Whale-Screened Tickers from Page 2
     whale_all_map = {row["Ticker"]: row for _, row in whale_df.iterrows()} if not whale_df.empty else {}
     if not whale_df.empty:
         w_longs = whale_df[whale_df["_raw_edge"] >= 0].sort_values("Heat_Score", ascending=False).head(15)
@@ -816,9 +789,6 @@ def build_master_confluence_watchlist():
     return master_df
 
 
-# ==========================================
-# 6. COLUMN HEADER & STYLING HELPERS
-# ==========================================
 MOVERS_PLAIN_HEADERS = {
     "Ticker": "Stock Symbol",
     "Direction": "Market Direction",
@@ -925,16 +895,14 @@ def style_dark_movers_table(df, use_plain_headers=True):
 
 
 # ==========================================
-# 7. SIDEBAR NAVIGATION & GLOBAL LINKED STATE
+# SIDEBAR NAVIGATION & GLOBAL STATE
 # ==========================================
 st.sidebar.title("🐋 OpenWhale Navigation")
 st.sidebar.caption("100% Free Smart-Money, GEX & Extended-Hours Radar")
 
-# Initialize nav_page in session state if missing
 if "nav_page" not in st.session_state:
     st.session_state.nav_page = PAGES[0]
 
-# Render radio without a conflicting widget 'key'
 selected_page = st.sidebar.radio(
     "Select Dashboard Page:",
     PAGES,
@@ -942,7 +910,6 @@ selected_page = st.sidebar.radio(
     help="Click any row in Page 1, 2, or 3 to automatically jump to Page 4 (Deep-Dive & Trade Ticket) for that ticker!",
 )
 
-# Update session state if user manually clicks a new page in the sidebar
 if selected_page != st.session_state.nav_page:
     st.session_state.nav_page = selected_page
     st.rerun()
@@ -956,6 +923,7 @@ use_plain_headers = st.sidebar.toggle(
     value=True,
     help="ON: Uses beginner-friendly headers like 'Last Traded Price', 'Fever Score', and 'Safety Net Floor'. OFF: Uses institutional quant terms like 'VWAP', 'RSI-14', and 'RVOL'.",
 )
+
 
 # ==========================================
 # PAGE 1: S&P MOVERS & SHAKERS
@@ -1094,7 +1062,7 @@ if page == PAGES[0]:
 
 
 # ==========================================
-# PAGE 2: TOP 20 OPTIONS WHALE SCANNER (LINKED TO PAGE 1)
+# PAGE 2: TOP 20 OPTIONS WHALE SCANNER
 # ==========================================
 elif page == PAGES[1]:
     st.title("🐋 OpenWhale: Top 20 Hot Stocks Today (Linked to Page 1 Movers)")
@@ -1192,7 +1160,7 @@ elif page == PAGES[1]:
 
 
 # ==========================================
-# PAGE 3: MASTER ACTIONABLE WATCHLIST (PAGE 1 + 2 COMBINED)
+# PAGE 3: MASTER ACTIONABLE WATCHLIST
 # ==========================================
 elif page == PAGES[2]:
     st.title("⚡ OpenWhale Master Actionable Watchlist (Page 1 + Page 2 Linked)")
@@ -1326,10 +1294,9 @@ elif page == PAGES[2]:
 
 
 # ==========================================
-# PAGE 4: SINGLE-TICKER DEEP DIVE + AUTOMATED TRADE TICKET
+# PAGE 4: SINGLE-TICKER DEEP DIVE + TRADE TICKET
 # ==========================================
 elif page == PAGES[3]:
-    # Pulls the linked ticker from Page 1, 2, or 3 via st.session_state.active_ticker
     master_df_for_nav = build_master_confluence_watchlist()
     screened_list = master_df_for_nav["Ticker"].tolist() if not master_df_for_nav.empty else SP500_LIQUID_UNIVERSE[:30]
 
@@ -1487,15 +1454,119 @@ elif page == PAGES[3]:
 
 
 # ==========================================
-# PAGE 5: HELP & TRADING PLAYBOOK (USER MANUAL)
+# PAGE 5: HELP & TRADING PLAYBOOK (RESTORED & EXPANDED)
 # ==========================================
 else:
     st.title("📖 OpenWhale Help Center & Everyday Trading Playbook")
-    st.markdown(
-        """
-        ### 🔗 How Cross-Page Ticker Linking Works
-        1. **Page 1 (`S&P Movers & Shakers`)** scans 125+ S&P & Nasdaq leaders and automatically feeds the day's top bullish and bearish movers into **Page 2 (`Options Whale Scanner`)** and **Page 3 (`Master Actionable Watchlist`)**.
-        2. **Click Any Row in Any Table:** On Pages 1, 2, or 3, clicking the selection box on the left side of any row immediately opens that ticker inside **Page 4 (`Single-Ticker Deep Dive + Trade Ticket`)**.
-        3. **Switch Tickers Effortlessly on Page 4:** Use the dropdown selector at the top of Page 4 to cycle through all of today's screened tickers without having to go back and forth.
-        """
+    st.caption("Everything you need to turn OpenWhale's institutional data into clear, confident trading decisions.")
+
+    h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs(
+        [
+            "🚀 1. Daily 3-Step Routine",
+            "🗣️ 2. Plain-English Dictionary",
+            "🎯 3. Three High-Win Setups",
+            "🛑 4. Red Flags & Risk Rules",
+        ]
     )
+
+    with h_tab1:
+        st.subheader("🚀 How to Use OpenWhale in 5 Minutes Every Morning")
+        st.markdown(
+            """
+            OpenWhale is designed as a **3-Stage Funnel** so you never have to guess which stock to trade or where to place your stop-loss:
+
+            #### **Step 1: Spot Today's Movers (`🏆 Page 1: S&P Movers & Shakers`)**
+            * **When:** Run between **8:30 AM and 9:45 AM Eastern Time**.
+            * **What to Look For:** Look at the **Dark-View Heatmap** and the **Top 50 Bullish / Bearish Tables**. Focus on stocks with **Unusual Volume Surge (`RVOL`) >= `1.5x`**—this proves big institutions are trading the stock today, not just retail traders.
+
+            #### **Step 2: Verify Smart-Money Options Conviction (`🔥 Page 2: Top 20 Options Whale Scanner`)**
+            * **What to Look For:** Check if your stock is in the **Top 10 Hot Longs** or **Top 10 Hot Shorts**.
+            * Confirm that **Smart Money Call Buying %** is above `60%` (for Longs) or below `40%` (for Shorts), and verify there are multiple **Urgent Whale Sweeps** (`Vol > 1.5x Open Interest`).
+
+            #### **Step 3: Review the Master Watchlist & Follow the Automated Trade Ticket (`⚡ Page 3 & Page 4`)**
+            * Go straight to **Page 3 (`Master Actionable Watchlist`)** to see all overlapping movers and whales ranked with bulk Trade Tickets.
+            * Click any row to jump into **Page 4 (`Single-Ticker Deep Dive + Trade Ticket`)** to inspect exact visual support/resistance walls and Dark Pool charts.
+            """
+        )
+
+    with h_tab2:
+        st.subheader("🗣️ Plain-English Dictionary (Wall Street Jargon Translated)")
+        dict_df = pd.DataFrame(
+            [
+                {
+                    "Everyday OpenWhale Term": "⭐⭐ Double Confirmed",
+                    "Wall Street Quant Term": "Multi-Factor Flow + Price Confluence",
+                    "How to Use It in Your Trading": "Stock passed both the S&P Extended-Hours Mover filter AND the CBOE Unusual Options Whale filter simultaneously.",
+                },
+                {
+                    "Everyday OpenWhale Term": "Price Floor (Safety Net)",
+                    "Wall Street Quant Term": "Put Wall (Max Negative GEX)",
+                    "How to Use It in Your Trading": "Big banks mechanically step in and buy shares here to hedge options. Great place to buy dips or take profits on shorts.",
+                },
+                {
+                    "Everyday OpenWhale Term": "Price Ceiling (Target)",
+                    "Wall Street Quant Term": "Call Wall (Max Positive GEX)",
+                    "How to Use It in Your Trading": "Big banks mechanically sell shares here to hedge options. Always take profits on Longs slightly BELOW this ceiling.",
+                },
+                {
+                    "Everyday OpenWhale Term": "Danger Line (Volatility Pivot)",
+                    "Wall Street Quant Term": "Zero Gamma Flip Level",
+                    "How to Use It in Your Trading": "Above this line = calm market where dips get bought. Below this line = wild market where drops accelerate fast.",
+                },
+                {
+                    "Everyday OpenWhale Term": "Fair Value Price",
+                    "Wall Street Quant Term": "Extended-Hours VWAP",
+                    "How to Use It in Your Trading": "The true average price paid today (including 4 AM Pre-Market & 8 PM After-Hours). Only go Long above it; only go Short below it.",
+                },
+                {
+                    "Everyday OpenWhale Term": "Fever Score (0–100)",
+                    "Wall Street Quant Term": "Extended-Hours RSI (14)",
+                    "How to Use It in Your Trading": "Above 70 = Overheated (don't chase at market open, wait for a dip). Below 30 = On Sale / Oversold (watch for a bounce).",
+                },
+            ]
+        )
+        st.dataframe(dict_df, use_container_width=True, hide_index=True)
+
+    with h_tab3:
+        st.subheader("🎯 The 3 Highest-Probability OpenWhale Trading Setups")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.success("### 🟢 Setup 1: Bullish Momentum Breakout")
+            st.markdown(
+                """
+                * **Source:** `⭐⭐ DOUBLE CONFIRMED` on Page 3.
+                * **Regime:** Stock is trading **ABOVE** both the **Danger Line** and **Fair Value (`VWAP`)**.
+                * **Flow:** Smart Money Call Buying **`>= 60%`**.
+                * **Execution:** Enter inside the **Ideal Entry Zone**, set Stop-Loss at the Ticket level, and take profit just below the **Price Ceiling**.
+                """
+            )
+        with c2:
+            st.info("### 💎 Setup 2: 'On Sale' Floor Bounce")
+            st.markdown(
+                """
+                * **Regime:** Stock pulls back to touch its **Price Floor (`Put Wall`)**.
+                * **Fever Check:** `RSI` drops below **`32`** (*On Sale / Oversold*).
+                * **Dark Pool:** FINRA Hidden Buying is **`>= 55%`** on Page 4.
+                * **Execution:** Buy the bounce off the **Price Floor**, Stop-Loss `0.8%` below Floor, Target return to **Fair Value (`VWAP`)**.
+                """
+            )
+        with c3:
+            st.error("### 🔴 Setup 3: Trapdoor Breakdown (Short / Puts)")
+            st.markdown(
+                """
+                * **Regime:** Stock breaks **BELOW** both its **Fair Value (`VWAP`)** and **Danger Line (`Zero Gamma`)**.
+                * **Flow:** Trade Ticket Verdict shows **`🔴 SELL SHORT`**.
+                * **Execution:** Enter Short / Buy Puts below `VWAP`, Stop-Loss just above `VWAP`, Target just above **Price Floor (`Put Wall`)**.
+                """
+            )
+
+    with h_tab4:
+        st.subheader("🛑 4 Golden Rules to Protect Your Capital")
+        st.warning(
+            """
+            1. **Prioritize `⭐⭐ DOUBLE CONFIRMED` Tickers on Page 3:** When both price volume and options whales agree, fakeouts drop dramatically.
+            2. **Never Buy Right Into the Price Ceiling (`Call Wall`):** If Reward:Risk is below `1.0x`, you are buying too close to overhead bank resistance.
+            3. **Never Chase a `70+` Fever Score at 9:30 AM:** Wait 15–30 minutes after the opening bell for the stock to cool down and test its **Fair Value Price (`VWAP`)**.
+            4. **Honor the Hard Stop-Loss Automatically:** If price crosses back through both `VWAP` and the **Danger Line**, exit immediately.
+            """
+        )
