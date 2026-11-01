@@ -2,7 +2,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime as dt
 import io
 import re
-import time
 import numpy as np
 import pandas as pd
 import requests
@@ -24,12 +23,35 @@ st.set_page_config(
 )
 
 # ==========================================
+# SESSION STATE FOR CROSS-PAGE TICKER LINKING
+# ==========================================
+PAGES = [
+    "🏆 1. S&P Movers & Shakers (Top 50 Each Way)",
+    "🔥 2. Top 20 Options Whale Scanner",
+    "⚡ 3. Master Actionable Watchlist (Page 1+2 Merged)",
+    "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)",
+    "📖 5. Help & Trading Playbook",
+]
+
+if "active_ticker" not in st.session_state:
+    st.session_state.active_ticker = "SPY"
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = PAGES[0]
+
+
+def jump_to_deep_dive(ticker_sym):
+    """Callback that links any selected ticker directly to Page 4 Deep Dive."""
+    st.session_state.active_ticker = ticker_sym.upper().strip()
+    st.session_state.nav_page = PAGES[3]
+
+
+# ==========================================
 # HOVER GLOSSARY & PLAIN-ENGLISH DEFINITIONS
 # ==========================================
 GLOSSARY_TOOLTIPS = {
-    "Ticker": "The short stock market code for the company or index (e.g., AAPL = Apple, SPY = S&P 500).",
+    "Ticker": "The short stock market code for the company or index (e.g., AAPL = Apple, SPY = S&P 500). Click any row to open its Deep-Dive Trade Ticket!",
     "Confluence_Tier": "Shows whether this stock was triggered by BOTH Page 1 (Price/Volume Mover) AND Page 2 (Options Whales) — '⭐⭐ DOUBLE CONFIRMED' is the highest-conviction signal.",
-    "Verdict": "Automated Trade Ticket Verdict: 🟢 BUY LONG or 🔴 SELL SHORT when at least 4 of 5 institutional factors align with >=1.2x Reward-to-Risk. Otherwise 🟡 WAIT.",
+    "Verdict": "Automated Trade Ticket Verdict: 🟢 BUY LONG or 🔴 SELL SHORT when institutional factors align with >=1.2x Reward-to-Risk. Otherwise 🟡 WAIT.",
     "Direction": "Shows whether momentum and smart-money buying are pushing the stock UP (Bullish Long) or DOWN (Bearish Short).",
     "Last_Price": "The most recent price a share traded at, INCLUDING early 4:00 AM Pre-Market and 8:00 PM After-Hours trading.",
     "Total_Move_Pct": "How much the stock price has gained or lost compared to yesterday's 4:00 PM closing price (includes overnight action).",
@@ -132,6 +154,35 @@ def render_hover_glossary_banner():
     st.markdown(pills_html, unsafe_allow_html=True)
 
 
+def render_quick_jump_bar(available_tickers, key_prefix):
+    """Renders a 1-click ticker linker bar on every scanner page."""
+    if not available_tickers:
+        return
+    c1, c2 = st.columns([0.72, 0.28])
+    with c1:
+        default_idx = (
+            available_tickers.index(st.session_state.active_ticker)
+            if st.session_state.active_ticker in available_tickers
+            else 0
+        )
+        chosen = st.selectbox(
+            "🔗 Quick-Link Any Screened Ticker to Page 4 (Deep Dive & Trade Ticket):",
+            options=available_tickers,
+            index=default_idx,
+            key=f"{key_prefix}_select",
+        )
+    with c2:
+        st.write("")
+        st.button(
+            f"🔍 Open {chosen} Deep-Dive & Trade Ticket ➔",
+            key=f"{key_prefix}_btn",
+            type="primary",
+            use_container_width=True,
+            on_click=jump_to_deep_dive,
+            args=(chosen,),
+        )
+
+
 # ==========================================
 # S&P 500 + MAJOR INDICES LIQUID UNIVERSE (~125 TICKERS)
 # ==========================================
@@ -150,7 +201,6 @@ SP500_LIQUID_UNIVERSE = [
     "DE", "LMT", "UPS", "FDX", "ADP", "ETN", "ITW", "GD", "NOC", "WM", "LIN", "SHW", "FCX", "NEM", "NEE", "SO", "DUK"
 ]
 SP500_LIQUID_UNIVERSE = list(dict.fromkeys(SP500_LIQUID_UNIVERSE))
-DEFAULT_WHALE_UNIVERSE = SP500_LIQUID_UNIVERSE[:45]
 OCC_REGEX = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
 
 
@@ -167,7 +217,7 @@ def compute_rsi(series, period=14):
 
 
 # ==========================================
-# 2. BATCH S&P MOVERS & SHAKERS ENGINE
+# 2. BATCH S&P MOVERS & SHAKERS ENGINE (PAGE 1)
 # ==========================================
 @st.cache_data(ttl=120)
 def fetch_sp_movers_and_shakers(tickers):
@@ -246,6 +296,8 @@ def fetch_sp_movers_and_shakers(tickers):
                     "Est_Floor": est_floor,
                     "Est_Ceiling": est_ceiling,
                     "Heat_Score": heat_score,
+                    "ema_bullish": bool(ema9 >= ema21),
+                    "above_vwap": bool(last_price >= vwap),
                     "_raw_score": raw_score,
                     "_abs_move": max(abs(total_move_pct), 0.15),
                 }
@@ -269,7 +321,7 @@ def fetch_sp_movers_and_shakers(tickers):
 
 
 # ==========================================
-# 3. CBOE OPTIONS & WHALE ENGINE
+# 3. CBOE OPTIONS & WHALE ENGINE (LINKED TO PAGE 1)
 # ==========================================
 def calc_bs_gamma(S, K, T, r, sigma):
     T = np.maximum(T, 4 / (365 * 24))
@@ -413,21 +465,29 @@ def compute_zero_gamma(gex_df_by_strike, spot):
     return round(float(zero_gamma), 2)
 
 
-def scan_single_whale_ticker(ticker):
+def scan_single_whale_ticker(ticker, precomputed_tech=None):
+    """
+    Reuses Page 1's precomputed price/VWAP/RSI data when available so Page 1, Page 2,
+    and Page 3 are 100% linked and synchronized!
+    """
     try:
         spot, opt_df = fetch_cboe_chain(ticker, num_expiries=3)
-        try:
-            tech = fetch_extended_hours_single(ticker)
+        if precomputed_tech is not None:
+            tech = precomputed_tech
             spot = tech["latest_price"]
-        except Exception:
-            tech = {
-                "latest_price": round(spot, 2),
-                "ext_gap_pct": 0.0,
-                "vwap": round(spot, 2),
-                "above_vwap": True,
-                "rsi": 50.0,
-                "ema_bullish": True,
-            }
+        else:
+            try:
+                tech = fetch_extended_hours_single(ticker)
+                spot = tech["latest_price"]
+            except Exception:
+                tech = {
+                    "latest_price": round(spot, 2),
+                    "ext_gap_pct": 0.0,
+                    "vwap": round(spot, 2),
+                    "above_vwap": True,
+                    "rsi": 50.0,
+                    "ema_bullish": True,
+                }
 
         call_prem = opt_df[opt_df["type"] == "call"]["est_premium"].sum()
         put_prem = opt_df[opt_df["type"] == "put"]["est_premium"].sum()
@@ -481,11 +541,39 @@ def scan_single_whale_ticker(ticker):
         return None
 
 
-@st.cache_data(ttl=180)
-def run_whale_scanner(universe_list):
+@st.cache_data(ttl=120)
+def run_linked_whale_scanner():
+    """
+    Dynamically links Page 1 -> Page 2:
+    Takes the Top 30 Bullish Movers + Top 30 Bearish Movers from Page 1 (+ Core Indices)
+    and scans all of them for CBOE Options Whale Activity!
+    """
+    top_bulls, top_bears, combined_100 = fetch_sp_movers_and_shakers(SP500_LIQUID_UNIVERSE)
+
+    tech_lookup = {}
+    if not combined_100.empty:
+        for _, r in combined_100.iterrows():
+            tech_lookup[r["Ticker"]] = {
+                "latest_price": float(r["Last_Price"]),
+                "ext_gap_pct": float(r["Total_Move_Pct"]),
+                "vwap": float(r["VWAP"]),
+                "above_vwap": bool(r["above_vwap"]),
+                "rsi": float(r["RSI_14"]),
+                "ema_bullish": bool(r["ema_bullish"]),
+            }
+
+    core_benchmarks = ["SPY", "QQQ", "IWM", "DIA", "SMH", "NVDA", "TSLA", "AAPL", "AMD", "MSFT", "AMZN", "META"]
+    p1_top_bulls = top_bulls.head(30)["Ticker"].tolist() if not top_bulls.empty else []
+    p1_top_bears = top_bears.head(30)["Ticker"].tolist() if not top_bears.empty else []
+
+    linked_universe = list(dict.fromkeys(core_benchmarks + p1_top_bulls + p1_top_bears))
+
     results = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(scan_single_whale_ticker, sym): sym for sym in universe_list}
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {
+            executor.submit(scan_single_whale_ticker, sym, tech_lookup.get(sym)): sym
+            for sym in linked_universe
+        }
         for future in as_completed(futures):
             res = future.result()
             if res is not None:
@@ -635,44 +723,40 @@ def build_automated_trade_ticket(spot, put_wall, call_wall, zero_gamma, vwap, rs
 # ==========================================
 @st.cache_data(ttl=120)
 def build_master_confluence_watchlist():
-    """
-    Merges all screened stocks from Page 1 (S&P Top Movers) and Page 2 (Options Whales),
-    identifies Double-Confirmed overlaps, and calculates a batch Trade Ticket for every row.
-    """
     top_bulls, top_bears, combined_100 = fetch_sp_movers_and_shakers(SP500_LIQUID_UNIVERSE)
-    whale_df = run_whale_scanner(DEFAULT_WHALE_UNIVERSE)
+    whale_df = run_linked_whale_scanner()
 
-    # Top 25 Bullish + Top 25 Bearish from Page 1
-    p1_subset = pd.concat([top_bulls.head(25), top_bears.head(25)], ignore_index=True) if not combined_100.empty else pd.DataFrame()
+    # Top 30 Bullish + Top 30 Bearish from Page 1
+    p1_subset = pd.concat([top_bulls.head(30), top_bears.head(30)], ignore_index=True) if not combined_100.empty else pd.DataFrame()
     p1_map = {row["Ticker"]: row for _, row in p1_subset.iterrows()} if not p1_subset.empty else {}
     p1_all_map = {row["Ticker"]: row for _, row in combined_100.iterrows()} if not combined_100.empty else {}
 
-    # Top 15 Bullish + Top 15 Bearish from Page 2
+    # All Whale-Screened Tickers from Page 2
+    whale_all_map = {row["Ticker"]: row for _, row in whale_df.iterrows()} if not whale_df.empty else {}
     if not whale_df.empty:
         w_longs = whale_df[whale_df["_raw_edge"] >= 0].sort_values("Heat_Score", ascending=False).head(15)
         w_shorts = whale_df[whale_df["_raw_edge"] < 0].sort_values("Heat_Score", ascending=False).head(15)
-        p2_subset = pd.concat([w_longs, w_shorts], ignore_index=True)
-        p2_map = {row["Ticker"]: row for _, row in p2_subset.iterrows()}
+        p2_top_set = set(pd.concat([w_longs, w_shorts])["Ticker"].tolist())
     else:
-        p2_map = {}
+        p2_top_set = set()
 
-    all_screened_tickers = sorted(list(set(p1_map.keys()) | set(p2_map.keys())))
+    all_screened_tickers = sorted(list(set(p1_map.keys()) | p2_top_set))
     master_rows = []
 
     for sym in all_screened_tickers:
         in_p1 = sym in p1_map
-        in_p2 = sym in p2_map
+        in_p2 = sym in p2_top_set
         m_row = p1_all_map.get(sym, {})
-        w_row = p2_map.get(sym, {})
+        w_row = whale_all_map.get(sym, {})
 
         if in_p1 and in_p2:
-            tier = "⭐⭐ DOUBLE CONFIRMED (Mover + Whale)"
+            tier = "⭐⭐ DOUBLE CONFIRMED (Page 1 Mover + Page 2 Whale)"
             tier_rank = 3
         elif in_p2:
-            tier = "🔥 Options Whale Driven (Page 2)"
+            tier = "🔥 Options Whale Driven (Page 2 Top 20)"
             tier_rank = 2
         else:
-            tier = "📈 Extended-Hours Mover (Page 1)"
+            tier = "📈 Extended-Hours Mover (Page 1 Top Mover)"
             tier_rank = 1
 
         spot = float(w_row.get("Last_Price") or m_row.get("Last_Price") or 0.0)
@@ -682,7 +766,7 @@ def build_master_confluence_watchlist():
         rvol = float(m_row.get("RVOL") or 1.2)
 
         call_pct = float(w_row.get("Call_Flow_Pct") or (62.0 if move_pct > 0 else 38.0))
-        sweeps = str(w_row.get("Whale_Sweeps") or "Scan on Page 3")
+        sweeps = str(w_row.get("Whale_Sweeps") or "0C / 0P")
         put_wall = float(w_row.get("Put_Wall") or m_row.get("Est_Floor") or round(spot * 0.97, 2))
         call_wall = float(w_row.get("Call_Wall") or m_row.get("Est_Ceiling") or round(spot * 1.03, 2))
         zero_gamma = float(w_row.get("Zero_Gamma") or vwap)
@@ -698,7 +782,9 @@ def build_master_confluence_watchlist():
         )
 
         combined_heat = round(
-            (float(m_row.get("Heat_Score", 60)) * 0.5) + (float(w_row.get("Heat_Score", 60)) * 0.5) + (10 if tier_rank == 3 else 0),
+            (float(m_row.get("Heat_Score", 60)) * 0.5)
+            + (float(w_row.get("Heat_Score", 60)) * 0.5)
+            + (12 if tier_rank == 3 else 0),
             1,
         )
         combined_heat = min(99.0, combined_heat)
@@ -779,7 +865,7 @@ def build_movers_column_config(use_plain_headers=True):
 
 def style_dark_movers_table(df, use_plain_headers=True):
     display_cols = list(MOVERS_PLAIN_HEADERS.keys())
-    clean_df = df[display_cols].copy()
+    clean_df = df[display_cols].copy().reset_index(drop=True)
 
     col_map = MOVERS_PLAIN_HEADERS if use_plain_headers else MOVERS_PRO_HEADERS
     clean_df = clean_df.rename(columns=col_map)
@@ -839,24 +925,20 @@ def style_dark_movers_table(df, use_plain_headers=True):
 
 
 # ==========================================
-# 7. SIDEBAR NAVIGATION & GLOBAL CONTROLS
+# 7. SIDEBAR NAVIGATION & GLOBAL LINKED STATE
 # ==========================================
 st.sidebar.title("🐋 OpenWhale Navigation")
 st.sidebar.caption("100% Free Smart-Money, GEX & Extended-Hours Radar")
 
 page = st.sidebar.radio(
     "Select Dashboard Page:",
-    [
-        "🏆 1. S&P Movers & Shakers (Top 50 Each Way)",
-        "🔥 2. Top 20 Options Whale Scanner",
-        "⚡ 3. Master Actionable Watchlist (Page 1+2 Merged)",
-        "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)",
-        "📖 5. Help & Trading Playbook",
-    ],
-    help="Navigate through the OpenWhale workflow: Scan Movers (Page 1), Scan Whales (Page 2), View Combined Actionable Setups (Page 3), Deep-Dive any Ticker (Page 4), or Read the Playbook (Page 5).",
+    PAGES,
+    key="nav_page",
+    help="Click any row in Page 1, 2, or 3 to automatically jump to Page 4 (Deep-Dive & Trade Ticket) for that ticker!",
 )
 
 st.sidebar.markdown("---")
+st.sidebar.markdown(f"**🎯 Currently Linked Ticker:** `{st.session_state.active_ticker}`")
 use_plain_headers = st.sidebar.toggle(
     "🗣️ Use Everyday Plain-English Column Headers",
     value=True,
@@ -866,7 +948,7 @@ use_plain_headers = st.sidebar.toggle(
 # ==========================================
 # PAGE 1: S&P MOVERS & SHAKERS
 # ==========================================
-if page == "🏆 1. S&P Movers & Shakers (Top 50 Each Way)":
+if page == PAGES[0]:
     st.title("🐋 OpenWhale: S&P Movers & Shakers (Top 50 Bullish & Bearish)")
     render_hover_glossary_banner()
 
@@ -876,46 +958,27 @@ if page == "🏆 1. S&P Movers & Shakers (Top 50 Each Way)":
             st.cache_data.clear()
     with col_info:
         st.info(
-            "🖱️ **Hover Over Any Column Header or Metric:** Every table column and KPI card below has a built-in Plain-English tooltip when you hover your mouse over it."
+            "🔗 **Interactive Ticker Linking:** Click the checkbox on **any row** in the tables below (or use the Quick-Link bar) to immediately open that stock's **Deep-Dive & Trade Ticket (Page 4)**!"
         )
 
-    with st.spinner("OpenWhale is scanning 125+ S&P & Nasdaq Liquid Leaders (including Pre-Market & After-Hours tape)..."):
+    with st.spinner("OpenWhale is scanning 125+ S&P & Nasdaq Liquid Leaders..."):
         top_bulls, top_bears, combined_100 = fetch_sp_movers_and_shakers(SP500_LIQUID_UNIVERSE)
 
     if not combined_100.empty:
+        render_quick_jump_bar(combined_100["Ticker"].tolist(), key_prefix="p1_jump")
+
         b1, b2, b3, b4 = st.columns(4)
         top_winner = top_bulls.iloc[0]
         top_loser = top_bears.iloc[0]
         avg_rsi = round(combined_100["RSI_14"].mean(), 1)
         high_rvol_count = len(combined_100[combined_100["RVOL"] >= 1.5])
 
-        b1.metric(
-            "🟢 #1 Bullish Leader",
-            f"{top_winner['Ticker']} (${top_winner['Last_Price']})",
-            f"{top_winner['Total_Move_Pct']:+.2f}%",
-            help="The strongest upward-moving stock in our S&P liquid universe right now, including Pre-Market and After-Hours trading.",
-        )
-        b2.metric(
-            "🔴 #1 Bearish Shaker",
-            f"{top_loser['Ticker']} (${top_loser['Last_Price']})",
-            f"{top_loser['Total_Move_Pct']:+.2f}%",
-            help="The sharpest downward-moving stock in our S&P liquid universe right now, including Pre-Market and After-Hours trading.",
-        )
-        b3.metric(
-            "🌡️ Market Fever (Avg RSI)",
-            f"{avg_rsi}",
-            "Overheated >70 | On Sale <30",
-            help=GLOSSARY_TOOLTIPS["RSI_14"],
-        )
-        b4.metric(
-            "⚡ Unusual Volume Surge (>1.5x)",
-            f"{high_rvol_count} Stocks",
-            "Big Money Active",
-            help=GLOSSARY_TOOLTIPS["RVOL"],
-        )
+        b1.metric("🟢 #1 Bullish Leader", f"{top_winner['Ticker']} (${top_winner['Last_Price']})", f"{top_winner['Total_Move_Pct']:+.2f}%")
+        b2.metric("🔴 #1 Bearish Shaker", f"{top_loser['Ticker']} (${top_loser['Last_Price']})", f"{top_loser['Total_Move_Pct']:+.2f}%")
+        b3.metric("🌡️ Market Fever (Avg RSI)", f"{avg_rsi}", "Overheated >70 | On Sale <30", help=GLOSSARY_TOOLTIPS["RSI_14"])
+        b4.metric("⚡ Unusual Volume Surge (>1.5x)", f"{high_rvol_count} Stocks", "Big Money Active", help=GLOSSARY_TOOLTIPS["RVOL"])
 
         st.subheader("🗺️ OpenWhale Dark-View Heatmap: Top 50 Bullish vs. Top 50 Bearish Movers")
-
         fig_heat = px.treemap(
             combined_100,
             path=[px.Constant("OpenWhale S&P Top 100 Movers & Shakers"), "Direction", "Ticker"],
@@ -930,93 +993,110 @@ if page == "🏆 1. S&P Movers & Shakers (Top 50 Each Way)":
             ],
             color_continuous_midpoint=0.0,
             custom_data=[
-                "Last_Price",
-                "Total_Move_Pct",
-                "Ext_Gap_Pct",
-                "VWAP",
-                "RSI_14",
-                "RVOL",
-                "Trend_Signal",
-                "Est_Floor",
-                "Est_Ceiling",
+                "Last_Price", "Total_Move_Pct", "Ext_Gap_Pct", "VWAP",
+                "RSI_14", "RVOL", "Trend_Signal", "Est_Floor", "Est_Ceiling",
             ],
         )
-
         fig_heat.update_traces(
             texttemplate="<b>%{label}</b><br>$%{customdata[0]:.2f}<br>%{customdata[1]:+.2f}%",
             textposition="middle center",
             hovertemplate=(
                 "<b>%{label} — OpenWhale Plain-English Breakdown</b><br>"
-                "• <b>Last Traded Price:</b> $%{customdata[0]:.2f} <i>(includes Pre/After-Hours)</i><br>"
+                "• <b>Last Traded Price:</b> $%{customdata[0]:.2f}<br>"
                 "• <b>Total Move vs Yesterday:</b> %{customdata[1]:+.2f}%<br>"
                 "• <b>Pre/After-Market Gap Only:</b> %{customdata[2]:+.2f}%<br>"
-                "• <b>Fair Value Price (VWAP):</b> $%{customdata[3]:.2f} <i>(Avg price paid today)</i><br>"
-                "• <b>Fever Score (RSI 0-100):</b> %{customdata[4]:.1f} <i>(>70 Overheated, <30 On Sale)</i><br>"
-                "• <b>Unusual Volume Surge:</b> %{customdata[5]:.2f}x normal volume<br>"
+                "• <b>Fair Value Price (VWAP):</b> $%{customdata[3]:.2f}<br>"
+                "• <b>Fever Score (RSI 0-100):</b> %{customdata[4]:.1f}<br>"
+                "• <b>Unusual Volume Surge:</b> %{customdata[5]:.2f}x<br>"
                 "• <b>Trend Verdict:</b> %{customdata[6]}<br>"
                 "• <b>Safety Net Floor / Target Ceiling:</b> $%{customdata[7]:.2f} – $%{customdata[8]:.2f}<extra></extra>"
             ),
         )
         fig_heat.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="#0e1117",
-            plot_bgcolor="#0e1117",
-            height=560,
-            margin=dict(t=30, l=10, r=10, b=10),
-            coloraxis_colorbar=dict(title="Move %"),
+            template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            height=520, margin=dict(t=25, l=10, r=10, b=10),
         )
         st.plotly_chart(fig_heat, use_container_width=True)
 
-        st.subheader("📋 Tabulated Movers & Shakers (Hover Any Column Header for Plain-English Definition)")
+        st.subheader("📋 Tabulated Movers & Shakers (Click Any Row to Jump to Page 4 Deep-Dive)")
         col_cfg = build_movers_column_config(use_plain_headers)
 
         sub_tab1, sub_tab2, sub_tab3 = st.tabs(
             [
-                "🟢 Top 50 Bullish Movers (Upward Momentum)",
-                "🔴 Top 50 Bearish Shakers (Downward Momentum)",
+                "🟢 Top 50 Bullish Movers (Click Row to Deep-Dive)",
+                "🔴 Top 50 Bearish Shakers (Click Row to Deep-Dive)",
                 "📊 All 100 Combined Table",
             ]
         )
 
         with sub_tab1:
-            st.dataframe(
-                style_dark_movers_table(top_bulls, use_plain_headers),
+            bulls_reset = top_bulls.reset_index(drop=True)
+            ev1 = st.dataframe(
+                style_dark_movers_table(bulls_reset, use_plain_headers),
                 column_config=col_cfg,
                 use_container_width=True,
                 hide_index=True,
-                height=600,
+                height=560,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="p1_bulls_table",
             )
+            if ev1.selection.rows:
+                picked = bulls_reset.iloc[ev1.selection.rows[0]]["Ticker"]
+                jump_to_deep_dive(picked)
+                st.rerun()
+
         with sub_tab2:
-            st.dataframe(
-                style_dark_movers_table(top_bears, use_plain_headers),
+            bears_reset = top_bears.reset_index(drop=True)
+            ev2 = st.dataframe(
+                style_dark_movers_table(bears_reset, use_plain_headers),
                 column_config=col_cfg,
                 use_container_width=True,
                 hide_index=True,
-                height=600,
+                height=560,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="p1_bears_table",
             )
+            if ev2.selection.rows:
+                picked = bears_reset.iloc[ev2.selection.rows[0]]["Ticker"]
+                jump_to_deep_dive(picked)
+                st.rerun()
+
         with sub_tab3:
-            st.dataframe(
-                style_dark_movers_table(combined_100, use_plain_headers),
+            comb_reset = combined_100.reset_index(drop=True)
+            ev3 = st.dataframe(
+                style_dark_movers_table(comb_reset, use_plain_headers),
                 column_config=col_cfg,
                 use_container_width=True,
                 hide_index=True,
-                height=600,
+                height=560,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="p1_comb_table",
             )
-    else:
-        st.error("Could not fetch batch price data. Click 'Refresh S&P Movers Now' to retry.")
+            if ev3.selection.rows:
+                picked = comb_reset.iloc[ev3.selection.rows[0]]["Ticker"]
+                jump_to_deep_dive(picked)
+                st.rerun()
 
 
 # ==========================================
-# PAGE 2: TOP 20 OPTIONS WHALE SCANNER
+# PAGE 2: TOP 20 OPTIONS WHALE SCANNER (LINKED TO PAGE 1)
 # ==========================================
-elif page == "🔥 2. Top 20 Options Whale Scanner":
-    st.title("🐋 OpenWhale: Top 20 Hot Stocks Today (Options Whales + Extended-Hours)")
+elif page == PAGES[1]:
+    st.title("🐋 OpenWhale: Top 20 Hot Stocks Today (Linked to Page 1 Movers)")
     render_hover_glossary_banner()
+    st.info(
+        "🔗 **Linked Pipeline:** This page automatically takes the **Top Bullish & Bearish Movers from Page 1** and scans their live CBOE Options Chains. **Click any row** below to open that stock's Deep-Dive & Trade Ticket on Page 4!"
+    )
 
-    with st.spinner("OpenWhale is scanning CBOE Options Chains & Extended-Hours Tape..."):
-        scan_df = run_whale_scanner(DEFAULT_WHALE_UNIVERSE)
+    with st.spinner("Scanning CBOE Options Chains for Page 1's Top Movers..."):
+        scan_df = run_linked_whale_scanner()
 
     if not scan_df.empty:
+        render_quick_jump_bar(scan_df["Ticker"].tolist(), key_prefix="p2_jump")
+
         whale_col_map = (
             {
                 "Ticker": "Stock Symbol",
@@ -1059,87 +1139,86 @@ elif page == "🔥 2. Top 20 Options Whale Scanner":
             whale_col_map["Heat_Score"]: st.column_config.NumberColumn(format="%.1f", help=GLOSSARY_TOOLTIPS["Heat_Score"]),
         }
 
-        longs = (
-            scan_df[scan_df["_raw_edge"] >= 0]
-            .sort_values("Heat_Score", ascending=False)
-            .head(10)[display_whale_cols]
-            .rename(columns=whale_col_map)
-        )
-        shorts = (
-            scan_df[scan_df["_raw_edge"] < 0]
-            .sort_values("Heat_Score", ascending=False)
-            .head(10)[display_whale_cols]
-            .rename(columns=whale_col_map)
-        )
+        longs_raw = scan_df[scan_df["_raw_edge"] >= 0].sort_values("Heat_Score", ascending=False).head(10).reset_index(drop=True)
+        shorts_raw = scan_df[scan_df["_raw_edge"] < 0].sort_values("Heat_Score", ascending=False).head(10).reset_index(drop=True)
+
+        longs_shown = longs_raw[display_whale_cols].rename(columns=whale_col_map)
+        shorts_shown = shorts_raw[display_whale_cols].rename(columns=whale_col_map)
 
         c_l, c_s = st.columns(2)
         with c_l:
-            st.markdown("### 🟢 Top 10 Hot LONGS (Bullish Whale Flow)")
-            st.dataframe(longs, column_config=whale_help_cfg, use_container_width=True, hide_index=True)
+            st.markdown("### 🟢 Top 10 Hot LONGS (Click Row to Deep-Dive)")
+            ev_l = st.dataframe(
+                longs_shown,
+                column_config=whale_help_cfg,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="p2_longs_table",
+            )
+            if ev_l.selection.rows:
+                picked = longs_raw.iloc[ev_l.selection.rows[0]]["Ticker"]
+                jump_to_deep_dive(picked)
+                st.rerun()
+
         with c_s:
-            st.markdown("### 🔴 Top 10 Hot SHORTS (Bearish Whale Flow)")
-            st.dataframe(shorts, column_config=whale_help_cfg, use_container_width=True, hide_index=True)
+            st.markdown("### 🔴 Top 10 Hot SHORTS (Click Row to Deep-Dive)")
+            ev_s = st.dataframe(
+                shorts_shown,
+                column_config=whale_help_cfg,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="p2_shorts_table",
+            )
+            if ev_s.selection.rows:
+                picked = shorts_raw.iloc[ev_s.selection.rows[0]]["Ticker"]
+                jump_to_deep_dive(picked)
+                st.rerun()
 
 
 # ==========================================
 # PAGE 3: MASTER ACTIONABLE WATCHLIST (PAGE 1 + 2 COMBINED)
 # ==========================================
-elif page == "⚡ 3. Master Actionable Watchlist (Page 1+2 Merged)":
-    st.title("⚡ OpenWhale Master Actionable Watchlist (Page 1 + Page 2 Combined)")
-    st.caption(
-        "Automatically merges all screened tickers from Page 1 (Price/Volume Movers) and Page 2 (Options Whales), highlights Double-Confirmed overlaps, and calculates Trade Tickets in bulk."
-    )
+elif page == PAGES[2]:
+    st.title("⚡ OpenWhale Master Actionable Watchlist (Page 1 + Page 2 Linked)")
     render_hover_glossary_banner()
+    st.info(
+        "🔗 **Click Any Row to Open Its Deep-Dive Charts & Trade Ticket:** This table unites all screened tickers from Page 1 and Page 2. Select any row below to inspect its GEX Walls and Dark Pool print history on Page 4."
+    )
 
-    with st.spinner("Merging Page 1 Movers & Page 2 Options Whales and generating batch Trade Tickets..."):
+    with st.spinner("Linking Page 1 Movers & Page 2 Options Whales into Master Watchlist..."):
         master_df = build_master_confluence_watchlist()
 
     if not master_df.empty:
+        render_quick_jump_bar(master_df["Ticker"].tolist(), key_prefix="p3_jump")
+
         double_conf_count = len(master_df[master_df["_tier_rank"] == 3])
         buy_long_count = len(master_df[master_df["Verdict"] == "🟢 BUY LONG"])
         sell_short_count = len(master_df[master_df["Verdict"] == "🔴 SELL SHORT"])
         high_rr_count = len(master_df[master_df["RR_Ratio"] >= 1.5])
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric(
-            "⭐⭐ Double-Confirmed Stocks",
-            f"{double_conf_count} Tickers",
-            "Page 1 + Page 2 Overlap",
-            help=GLOSSARY_TOOLTIPS["Confluence_Tier"],
-        )
-        k2.metric(
-            "🟢 Actionable BUY LONG Tickets",
-            f"{buy_long_count} Setups",
-            "4+ Bullish Factors Aligned",
-            help=GLOSSARY_TOOLTIPS["Verdict"],
-        )
-        k3.metric(
-            "🔴 Actionable SELL SHORT Tickets",
-            f"{sell_short_count} Setups",
-            "Bearish Breakdown Confirmed",
-            help=GLOSSARY_TOOLTIPS["Verdict"],
-        )
-        k4.metric(
-            "⚖️ Setups w/ Reward:Risk >= 1.5x",
-            f"{high_rr_count} Tickers",
-            "High Asymmetry",
-            help=GLOSSARY_TOOLTIPS["RR_Ratio"],
-        )
+        k1.metric("⭐⭐ Double-Confirmed Stocks", f"{double_conf_count} Tickers", "Page 1 + Page 2 Overlap", help=GLOSSARY_TOOLTIPS["Confluence_Tier"])
+        k2.metric("🟢 Actionable BUY LONG Tickets", f"{buy_long_count} Setups", "4+ Bullish Factors Aligned", help=GLOSSARY_TOOLTIPS["Verdict"])
+        k3.metric("🔴 Actionable SELL SHORT Tickets", f"{sell_short_count} Setups", "Bearish Breakdown Confirmed", help=GLOSSARY_TOOLTIPS["Verdict"])
+        k4.metric("⚖️ Setups w/ Reward:Risk >= 1.5x", f"{high_rr_count} Tickers", "High Asymmetry", help=GLOSSARY_TOOLTIPS["RR_Ratio"])
 
-        # Filter Controls for the Master Table
         f1, f2, f3 = st.columns([0.4, 0.35, 0.25])
         with f1:
             tier_filter = st.multiselect(
                 "Filter by Confirmation Source:",
                 options=[
-                    "⭐⭐ DOUBLE CONFIRMED (Mover + Whale)",
-                    "🔥 Options Whale Driven (Page 2)",
-                    "📈 Extended-Hours Mover (Page 1)",
+                    "⭐⭐ DOUBLE CONFIRMED (Page 1 Mover + Page 2 Whale)",
+                    "🔥 Options Whale Driven (Page 2 Top 20)",
+                    "📈 Extended-Hours Mover (Page 1 Top Mover)",
                 ],
                 default=[
-                    "⭐⭐ DOUBLE CONFIRMED (Mover + Whale)",
-                    "🔥 Options Whale Driven (Page 2)",
-                    "📈 Extended-Hours Mover (Page 1)",
+                    "⭐⭐ DOUBLE CONFIRMED (Page 1 Mover + Page 2 Whale)",
+                    "🔥 Options Whale Driven (Page 2 Top 20)",
+                    "📈 Extended-Hours Mover (Page 1 Top Mover)",
                 ],
             )
         with f2:
@@ -1151,11 +1230,15 @@ elif page == "⚡ 3. Master Actionable Watchlist (Page 1+2 Merged)":
         with f3:
             min_rr = st.slider("Minimum Reward:Risk Ratio", 0.5, 4.0, 1.0, 0.25)
 
-        filtered_master = master_df[
-            (master_df["Confluence_Tier"].isin(tier_filter))
-            & (master_df["Verdict"].isin(verdict_filter))
-            & (master_df["RR_Ratio"] >= min_rr)
-        ].copy()
+        filtered_master = (
+            master_df[
+                (master_df["Confluence_Tier"].isin(tier_filter))
+                & (master_df["Verdict"].isin(verdict_filter))
+                & (master_df["RR_Ratio"] >= min_rr)
+            ]
+            .copy()
+            .reset_index(drop=True)
+        )
 
         master_col_map = (
             {
@@ -1206,15 +1289,21 @@ elif page == "⚡ 3. Master Actionable Watchlist (Page 1+2 Merged)":
             for k in display_master_cols
         }
 
-        st.dataframe(
+        ev_m = st.dataframe(
             shown_df,
             column_config=master_help_cfg,
             use_container_width=True,
             hide_index=True,
-            height=560,
+            height=540,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="p3_master_table",
         )
+        if ev_m.selection.rows:
+            picked = filtered_master.iloc[ev_m.selection.rows[0]]["Ticker"]
+            jump_to_deep_dive(picked)
+            st.rerun()
 
-        # Download CSV Button
         csv_bytes = shown_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             "📥 Download Today's Master Actionable Watchlist (CSV)",
@@ -1222,27 +1311,42 @@ elif page == "⚡ 3. Master Actionable Watchlist (Page 1+2 Merged)":
             file_name=f"openwhale_master_watchlist_{dt.date.today()}.csv",
             mime="text/csv",
         )
-    else:
-        st.warning("Could not build Master Watchlist right now. Click Refresh in the sidebar.")
 
 
 # ==========================================
 # PAGE 4: SINGLE-TICKER DEEP DIVE + AUTOMATED TRADE TICKET
 # ==========================================
-elif page == "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)":
-    selected_ticker = st.sidebar.text_input(
-        "🔍 Enter Stock or Index Symbol",
-        value="SPY",
-        help="Type any US Stock, ETF (SPY, QQQ), or Cash Index (SPX, VIX, NDX).",
-    ).upper().strip()
-    num_expiries = st.sidebar.slider(
-        "Expirations to Aggregate",
-        1,
-        8,
-        4,
-        help="How many upcoming options expiration dates to combine when calculating Price Floors and Ceilings.",
-    )
+elif page == PAGES[3]:
+    # Pulls the linked ticker from Page 1, 2, or 3 via st.session_state.active_ticker
+    master_df_for_nav = build_master_confluence_watchlist()
+    screened_list = master_df_for_nav["Ticker"].tolist() if not master_df_for_nav.empty else SP500_LIQUID_UNIVERSE[:30]
 
+    c_nav1, c_nav2, c_nav3 = st.columns([0.45, 0.35, 0.20])
+    with c_nav1:
+        if st.session_state.active_ticker not in screened_list:
+            screened_list = [st.session_state.active_ticker] + screened_list
+        chosen_from_list = st.selectbox(
+            "🔗 Switch Between Today's Screened Tickers (from Pages 1–3):",
+            options=screened_list,
+            index=screened_list.index(st.session_state.active_ticker),
+        )
+        if chosen_from_list != st.session_state.active_ticker:
+            st.session_state.active_ticker = chosen_from_list
+            st.rerun()
+
+    with c_nav2:
+        manual_sym = st.text_input(
+            "Or Type Any Custom Ticker / Index (e.g. SPX, NVDA):",
+            value=st.session_state.active_ticker,
+        ).upper().strip()
+        if manual_sym != st.session_state.active_ticker:
+            st.session_state.active_ticker = manual_sym
+            st.rerun()
+
+    with c_nav3:
+        num_expiries = st.slider("Options Expiries:", 1, 8, 4)
+
+    selected_ticker = st.session_state.active_ticker
     st.title(f"🐋 OpenWhale Deep-Dive & Automated Trade Ticket: {selected_ticker}")
     render_hover_glossary_banner()
 
@@ -1287,7 +1391,7 @@ elif page == "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)":
         st.markdown(
             f"""
             <div class="ticket-box" style="background-color:{ticket['bg_color']}; border-color:{ticket['border_color']};">
-                <h3 style="margin-top:0; color:#f8fafc;">🎫 OpenWhale Automated Trade Ticket: {ticket['verdict']}</h3>
+                <h3 style="margin-top:0; color:#f8fafc;">🎫 OpenWhale Automated Trade Ticket ({selected_ticker}): {ticket['verdict']}</h3>
                 <p style="color:#cbd5e1; margin-bottom:8px;"><b>5-Point Confluence Check (Bullish Score: {ticket['bull_points']}/5 | Bearish Score: {ticket['bear_points']}/5):</b></p>
                 <ul style="color:#e2e8f0; margin-bottom:0;">{reasons_html}</ul>
             </div>
@@ -1310,31 +1414,11 @@ elif page == "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)":
 
         m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("Last Traded Price", f"${spot}", f"{tech['ext_gap_pct']:+.2f}%", help=GLOSSARY_TOOLTIPS["Last_Price"])
-        m2.metric(
-            "Price Floor (Safety Net)" if use_plain_headers else "Put Wall (-GEX)",
-            f"${put_wall}",
-            help=GLOSSARY_TOOLTIPS["Put_Wall"],
-        )
-        m3.metric(
-            "Price Ceiling (Target)" if use_plain_headers else "Call Wall (+GEX)",
-            f"${call_wall}",
-            help=GLOSSARY_TOOLTIPS["Call_Wall"],
-        )
-        m4.metric(
-            "Danger Line (Pivot)" if use_plain_headers else "Zero Gamma Flip",
-            f"${zero_gamma}",
-            help=GLOSSARY_TOOLTIPS["Zero_Gamma"],
-        )
-        m5.metric(
-            "Fair Price (VWAP)" if use_plain_headers else "Extended VWAP",
-            f"${tech['vwap']}",
-            help=GLOSSARY_TOOLTIPS["VWAP"],
-        )
-        m6.metric(
-            "Fever Score (RSI)" if use_plain_headers else "Ext RSI(14)",
-            f"{tech['rsi']}",
-            help=GLOSSARY_TOOLTIPS["RSI_14"],
-        )
+        m2.metric("Price Floor (Safety Net)" if use_plain_headers else "Put Wall (-GEX)", f"${put_wall}", help=GLOSSARY_TOOLTIPS["Put_Wall"])
+        m3.metric("Price Ceiling (Target)" if use_plain_headers else "Call Wall (+GEX)", f"${call_wall}", help=GLOSSARY_TOOLTIPS["Call_Wall"])
+        m4.metric("Danger Line (Pivot)" if use_plain_headers else "Zero Gamma Flip", f"${zero_gamma}", help=GLOSSARY_TOOLTIPS["Zero_Gamma"])
+        m5.metric("Fair Price (VWAP)" if use_plain_headers else "Extended VWAP", f"${tech['vwap']}", help=GLOSSARY_TOOLTIPS["VWAP"])
+        m6.metric("Fever Score (RSI)" if use_plain_headers else "Ext RSI(14)", f"{tech['rsi']}", help=GLOSSARY_TOOLTIPS["RSI_14"])
 
         col_l, col_r = st.columns([0.62, 0.38])
         with col_l:
@@ -1355,14 +1439,9 @@ elif page == "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)":
                 )
             )
             fig.add_vline(x=spot, line_dash="dash", line_color="#3b82f6", annotation_text=f"Last Price: ${spot}")
-            fig.add_vline(
-                x=zero_gamma,
-                line_dash="dot",
-                line_color="#f59e0b",
-                annotation_text=f"Danger Line: ${zero_gamma}",
-            )
+            fig.add_vline(x=zero_gamma, line_dash="dot", line_color="#f59e0b", annotation_text=f"Danger Line: ${zero_gamma}")
             fig.update_layout(
-                title=f"{selected_ticker} Price Floors (Red) & Price Ceilings (Green) — Hover Bars for Details",
+                title=f"{selected_ticker} Price Floors (Red) & Price Ceilings (Green)",
                 template="plotly_dark",
                 height=420,
             )
@@ -1372,13 +1451,7 @@ elif page == "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)":
             if not finra_df.empty:
                 fig_dp = make_subplots(specs=[[{"secondary_y": True}]])
                 fig_dp.add_trace(
-                    go.Bar(
-                        x=finra_df["Date"],
-                        y=finra_df["Total_Vol"],
-                        name="Dark Pool Volume",
-                        marker_color="#6366f1",
-                        opacity=0.6,
-                    ),
+                    go.Bar(x=finra_df["Date"], y=finra_df["Total_Vol"], name="Dark Pool Volume", marker_color="#6366f1", opacity=0.6),
                     secondary_y=False,
                 )
                 fig_dp.add_trace(
@@ -1388,17 +1461,11 @@ elif page == "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)":
                         name="Hidden Buying %",
                         mode="lines+markers",
                         line=dict(color="#10b981", width=3),
-                        hovertemplate="<b>Date: %{x}</b><br>Hidden Dark Pool Buying: %{y:.1f}%<br><i>Above 55% = Quiet Institutional Accumulation</i><extra></extra>",
                     ),
                     secondary_y=True,
                 )
                 fig_dp.add_hline(y=50, line_dash="dot", line_color="#94a3b8", secondary_y=True)
-                fig_dp.update_layout(
-                    title=f"{selected_ticker} FINRA Dark Pool Buying %",
-                    template="plotly_dark",
-                    height=420,
-                    legend=dict(orientation="h", y=1.12),
-                )
+                fig_dp.update_layout(title=f"{selected_ticker} FINRA Dark Pool Buying %", template="plotly_dark", height=420)
                 st.plotly_chart(fig_dp, use_container_width=True)
             else:
                 st.info("Dark Pool volume is reported for stocks & ETFs (not cash indices like SPX).")
@@ -1412,106 +1479,11 @@ elif page == "🔍 4. Single-Ticker Deep Dive (+ Trade Ticket)":
 # ==========================================
 else:
     st.title("📖 OpenWhale Help Center & Everyday Trading Playbook")
-    st.caption("Everything you need to turn OpenWhale's institutional data into clear, confident trading decisions.")
-
-    h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs(
-        [
-            "🚀 1. Daily Routine (Now w/ Master Watchlist)",
-            "🗣️ 2. Plain-English Dictionary",
-            "🎯 3. Three High-Win Setups",
-            "🛑 4. Red Flags & Risk Rules",
-        ]
+    st.markdown(
+        """
+        ### 🔗 How Cross-Page Ticker Linking Works
+        1. **Page 1 (`S&P Movers & Shakers`)** scans 125+ S&P & Nasdaq leaders and automatically feeds the day's top bullish and bearish movers into **Page 2 (`Options Whale Scanner`)** and **Page 3 (`Master Actionable Watchlist`)**.
+        2. **Click Any Row in Any Table:** On Pages 1, 2, or 3, clicking the selection box on the left side of any row immediately opens that ticker inside **Page 4 (`Single-Ticker Deep Dive + Trade Ticket`)**.
+        3. **Switch Tickers Effortlessly on Page 4:** Use the dropdown selector at the top of Page 4 to cycle through all of today's screened tickers without having to go back and forth.
+        """
     )
-
-    with h_tab1:
-        st.subheader("🚀 How to Use OpenWhale in 5 Minutes Every Morning")
-        st.markdown(
-            """
-            #### **Shortcut: Go Straight to `⚡ Page 3: Master Actionable Watchlist`**
-            * **What It Does:** Automatically merges the **Top Movers from Page 1** and the **Top Options Whales from Page 2** into a single list.
-            * **Look for `⭐⭐ DOUBLE CONFIRMED (Mover + Whale)`:** These are stocks where extended-hours price/volume momentum and big-money options sweeps are happening at the exact same time.
-            * **Filter for `🟢 BUY LONG` or `🔴 SELL SHORT`** with a **Reward:Risk Ratio >= `1.5x`**, then type your favorite pick into **Page 4** to inspect its visual support/resistance walls and Dark Pool chart.
-            """
-        )
-
-    with h_tab2:
-        st.subheader("🗣️ Plain-English Dictionary (Wall Street Jargon Translated)")
-        dict_df = pd.DataFrame(
-            [
-                {
-                    "Everyday OpenWhale Term": "⭐⭐ Double Confirmed",
-                    "Wall Street Quant Term": "Multi-Factor Flow + Price Confluence",
-                    "How to Use It in Your Trading": "Stock passed both the S&P Extended-Hours Mover filter AND the CBOE Unusual Options Whale filter simultaneously.",
-                },
-                {
-                    "Everyday OpenWhale Term": "Price Floor (Safety Net)",
-                    "Wall Street Quant Term": "Put Wall (Max Negative GEX)",
-                    "How to Use It in Your Trading": "Big banks mechanically step in and buy shares here to hedge options. Great place to buy dips or take profits on shorts.",
-                },
-                {
-                    "Everyday OpenWhale Term": "Price Ceiling (Target)",
-                    "Wall Street Quant Term": "Call Wall (Max Positive GEX)",
-                    "How to Use It in Your Trading": "Big banks mechanically sell shares here to hedge options. Always take profits on Longs slightly BELOW this ceiling.",
-                },
-                {
-                    "Everyday OpenWhale Term": "Danger Line (Volatility Pivot)",
-                    "Wall Street Quant Term": "Zero Gamma Flip Level",
-                    "How to Use It in Your Trading": "Above this line = calm market where dips get bought. Below this line = wild market where drops accelerate fast.",
-                },
-                {
-                    "Everyday OpenWhale Term": "Fair Value Price",
-                    "Wall Street Quant Term": "Extended-Hours VWAP",
-                    "How to Use It in Your Trading": "The true average price paid today (including 4 AM Pre-Market & 8 PM After-Hours). Only go Long above it; only go Short below it.",
-                },
-                {
-                    "Everyday OpenWhale Term": "Fever Score (0–100)",
-                    "Wall Street Quant Term": "Extended-Hours RSI (14)",
-                    "How to Use It in Your Trading": "Above 70 = Overheated (don't chase at market open, wait for a dip). Below 30 = On Sale / Oversold (watch for a bounce).",
-                },
-            ]
-        )
-        st.dataframe(dict_df, use_container_width=True, hide_index=True)
-
-    with h_tab3:
-        st.subheader("🎯 The 3 Highest-Probability OpenWhale Trading Setups")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.success("### 🟢 Setup 1: Bullish Momentum Breakout")
-            st.markdown(
-                """
-                * **Source:** `⭐⭐ DOUBLE CONFIRMED` on Page 3.
-                * **Regime:** Stock is **ABOVE** both the **Danger Line** and **Fair Value (`VWAP`)**.
-                * **Flow:** Smart Money Call Buying **`>= 60%`**.
-                * **Execution:** Enter inside the **Ideal Entry Zone**, set Stop-Loss at the Ticket level, and take profit just below the **Price Ceiling**.
-                """
-            )
-        with c2:
-            st.info("### 💎 Setup 2: 'On Sale' Floor Bounce")
-            st.markdown(
-                """
-                * **Regime:** Stock pulls back to touch its **Price Floor (`Put Wall`)**.
-                * **Fever Check:** `RSI` drops below **`32`** (*On Sale / Oversold*).
-                * **Dark Pool:** FINRA Hidden Buying is **`>= 55%`** on Page 4.
-                * **Execution:** Buy the bounce off the **Price Floor**, Stop-Loss `0.8%` below Floor, Target return to **Fair Value (`VWAP`)**.
-                """
-            )
-        with c3:
-            st.error("### 🔴 Setup 3: Trapdoor Breakdown (Short / Puts)")
-            st.markdown(
-                """
-                * **Regime:** Stock breaks **BELOW** both its **Fair Value (`VWAP`)** and **Danger Line (`Zero Gamma`)**.
-                * **Flow:** Trade Ticket Verdict shows **`🔴 SELL SHORT`**.
-                * **Execution:** Enter Short / Buy Puts below `VWAP`, Stop-Loss just above `VWAP`, Target just above **Price Floor (`Put Wall`)**.
-                """
-            )
-
-    with h_tab4:
-        st.subheader("🛑 4 Golden Rules to Protect Your Capital")
-        st.warning(
-            """
-            1. **Prioritize `⭐⭐ DOUBLE CONFIRMED` Tickers on Page 3:** When both price volume and options whales agree, fakeouts drop dramatically.
-            2. **Never Buy Right Into the Price Ceiling (`Call Wall`):** If Reward:Risk is below `1.0x`, you are buying too close to overhead bank resistance.
-            3. **Never Chase a `70+` Fever Score at 9:30 AM:** Wait 15–30 minutes after the opening bell for the stock to cool down and test its **Fair Value Price (`VWAP`)**.
-            4. **Honor the Hard Stop-Loss Automatically:** If price crosses back through both `VWAP` and the **Danger Line**, exit immediately.
-            """
-        )
