@@ -1,6 +1,9 @@
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime as dt
+import os
 import re
+import sqlite3
 import time
 import numpy as np
 import pandas as pd
@@ -14,15 +17,82 @@ import streamlit as st
 # PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="OpenWhale | Live Stream, Sweeps, Backtester & Congress",
+    page_title="OpenWhale | Live Stream, Sweeps, DB & 5-Star Backtester",
     page_icon="🐋",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# ==========================================
+# HOVER GLOSSARY & PLAIN-ENGLISH DEFINITIONS
+# ==========================================
+GLOSSARY_TOOLTIPS = {
+    "ticker": "The stock market symbol for the company or index (e.g., SPY, NVDA, AAPL).",
+    "star_str": "Stabilized 1-to-5 Star Rating: Anchored on 15-minute institutional candles so it won't flicker on minor 1-minute noise.",
+    "verdict_label": "Plain-English Action Verdict: Shows BUY LONG or SELL SHORT only when 4 or 5 institutional criteria align.",
+    "strength_trend": "Signal Strength Trajectory: Shows whether buying/selling pressure over the last 45 minutes is 🔥 Strengthening, ⚡ Newly Triggered, or ❄️ Cooling.",
+    "duration_label": "Signal Duration: How long (in minutes/hours) the stock has continuously held its current trend above/below Fair Price (VWAP).",
+    "spot": "The latest traded share price, including early 4:00 AM Pre-Market and 8:00 PM After-Hours sessions.",
+    "entry": "Ideal Entry Price: Anchored between current price and Today's Fair Price (VWAP) so you don't overpay.",
+    "stop": "Hard Stop-Loss: The exact price where the setup breaks down (below VWAP/Danger Line or Price Floor). Exit immediately if hit.",
+    "target": "Profit Target: Placed just inside the major Price Ceiling (Call Wall) for longs, or Price Floor (Put Wall) for shorts.",
+    "rr": "Reward-to-Risk Ratio: How many dollars you stand to make for every $1 risked. Aim for 1.5 : 1 or higher.",
+    "call_pct": "Smart-Money Call Buying %: Percentage of options money spent on bullish CALLS vs. bearish PUTS today.",
+    "sweeps_summary": "Urgent Whale Sweeps: Counts how many large institutional options orders (Volume > 1.25x Open Interest and >= $50k) hit the tape today.",
+    "Expected_Timeframe": "Typical hold time based on whether whales are buying 0DTE (Intraday) or Weekly/Monthly (Swing) contracts.",
+}
+
 st.markdown(
     """
     <style>
+    .ow-glossary-bar {
+        background-color: #111827;
+        border: 1px solid #1f2937;
+        border-radius: 10px;
+        padding: 10px 16px;
+        margin-bottom: 14px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+    }
+    .ow-pill {
+        position: relative;
+        display: inline-block;
+        background-color: #1e293b;
+        color: #38bdf8;
+        padding: 4px 11px;
+        border-radius: 999px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        cursor: help;
+        border-bottom: 1px dashed #38bdf8;
+    }
+    .ow-pill .ow-tip {
+        visibility: hidden;
+        width: 280px;
+        background-color: #0f172a;
+        color: #f8fafc;
+        text-align: left;
+        border-radius: 8px;
+        padding: 10px 12px;
+        position: absolute;
+        z-index: 9999;
+        top: 130%;
+        left: 50%;
+        margin-left: -140px;
+        opacity: 0;
+        transition: opacity 0.2s;
+        border: 1px solid #38bdf8;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.75);
+        font-weight: 400;
+        font-size: 0.79rem;
+        line-height: 1.4;
+    }
+    .ow-pill:hover .ow-tip {
+        visibility: visible;
+        opacity: 1;
+    }
     .star-card {
         background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
         border: 2px solid #eab308;
@@ -34,6 +104,183 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+def render_hover_glossary_banner():
+    st.markdown(
+        """
+        <div class="ow-glossary-bar">
+            <span style="color:#94a3b8; font-size:0.84rem; font-weight:600;">💡 Hover any term for Plain-English meaning:</span>
+            <div class="ow-pill">Price Floor (Put Wall)<span class="ow-tip"><b>Price Floor / Put Wall:</b> The strike price where big banks mechanically buy shares to hedge options. Acts like a trampoline safety net.</span></div>
+            <div class="ow-pill">Price Ceiling (Call Wall)<span class="ow-tip"><b>Price Ceiling / Call Wall:</b> The strike price where big banks start selling shares to hedge options. Acts like a brick ceiling—great place to take profits.</span></div>
+            <div class="ow-pill">Danger Line (Zero Gamma)<span class="ow-tip"><b>Danger Line (Flip Level):</b> Above this price, trading is calm and dips get bought. Below this price, swings become fast and violent.</span></div>
+            <div class="ow-pill">Fair Price (VWAP)<span class="ow-tip"><b>Fair Value Price (VWAP):</b> The true average price paid per share today weighted by volume. Above = Buyers winning.</span></div>
+            <div class="ow-pill">Fever Score (RSI)<span class="ow-tip"><b>Fever Score (RSI 0–100):</b> Above 70 = Overheated (don't chase). Below 30 = On Sale / Oversold (watch for a bounce).</span></div>
+            <div class="ow-pill">Signal Duration & Strength<span class="ow-tip"><b>Signal Duration & Strength:</b> Tracks how many consecutive minutes/hours a stock has held its trend and whether momentum is Strengthening (🔥) or Cooling (❄️).</span></div>
+            <div class="ow-pill">Whale Sweeps (Vol > OI)<span class="ow-tip"><b>Whale Sweeps:</b> Urgent options orders where today's volume exceeds existing Open Interest, proving brand-new smart-money positions are opening.</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ==========================================
+# 1. LIGHTWEIGHT SQLITE DATABASE + GITHUB SYNC
+# ==========================================
+DB_PATH = "openwhale_signals.db"
+CSV_BACKUP_PATH = "openwhale_signals_log.csv"
+
+
+def init_sqlite_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS signal_history (
+            signal_date TEXT,
+            ticker TEXT,
+            first_seen_time TEXT,
+            last_seen_time TEXT,
+            times_confirmed INTEGER,
+            peak_stars INTEGER,
+            current_stars INTEGER,
+            bias TEXT,
+            strength_trend TEXT,
+            duration_mins INTEGER,
+            entry_price REAL,
+            latest_spot REAL,
+            stop_loss REAL,
+            target_price REAL,
+            rr_ratio REAL,
+            call_flow_pct REAL,
+            PRIMARY KEY (signal_date, ticker)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_signal_to_db(eval_dict):
+    """
+    Logs or updates any 4-Star or 5-Star trade in SQLite so we track when it first
+    triggered, how many times it confirmed, and whether it is gaining strength.
+    """
+    if eval_dict["stars"] < 4:
+        return
+    init_sqlite_db()
+    today_str = dt.date.today().strftime("%Y-%m-%d")
+    now_str = dt.datetime.now().strftime("%H:%M:%S")
+    tkr = eval_dict["ticker"]
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT first_seen_time, times_confirmed, peak_stars, entry_price FROM signal_history WHERE signal_date=? AND ticker=?",
+        (today_str, tkr),
+    )
+    row = cur.fetchone()
+
+    if row is None:
+        cur.execute(
+            """
+            INSERT INTO signal_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                today_str,
+                tkr,
+                now_str,
+                now_str,
+                1,
+                eval_dict["stars"],
+                eval_dict["stars"],
+                eval_dict["bias"],
+                eval_dict["strength_trend"],
+                eval_dict["duration_mins"],
+                eval_dict["spot"],
+                eval_dict["spot"],
+                eval_dict["stop"],
+                eval_dict["target"],
+                eval_dict["rr"],
+                eval_dict["call_pct"],
+            ),
+        )
+    else:
+        first_seen, count_conf, peak_s, orig_entry = row
+        new_peak = max(int(peak_s), eval_dict["stars"])
+        cur.execute(
+            """
+            UPDATE signal_history
+            SET last_seen_time=?, times_confirmed=?, peak_stars=?, current_stars=?,
+                bias=?, strength_trend=?, duration_mins=?, latest_spot=?,
+                stop_loss=?, target_price=?, rr_ratio=?, call_flow_pct=?
+            WHERE signal_date=? AND ticker=?
+            """,
+            (
+                now_str,
+                int(count_conf) + 1,
+                new_peak,
+                eval_dict["stars"],
+                eval_dict["bias"],
+                eval_dict["strength_trend"],
+                eval_dict["duration_mins"],
+                eval_dict["spot"],
+                eval_dict["stop"],
+                eval_dict["target"],
+                eval_dict["rr"],
+                eval_dict["call_pct"],
+                today_str,
+                tkr,
+            ),
+        )
+    conn.commit()
+    df_log = pd.read_sql_query("SELECT * FROM signal_history ORDER BY signal_date DESC, last_seen_time DESC", conn)
+    conn.close()
+    df_log.to_csv(CSV_BACKUP_PATH, index=False)
+
+
+def read_signals_from_db():
+    init_sqlite_db()
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("SELECT * FROM signal_history ORDER BY signal_date DESC, last_seen_time DESC", conn)
+    conn.close()
+    return df
+
+
+def push_file_to_github(local_file_path, repo_full_name, branch="main", github_token=""):
+    """
+    Commits the local SQLite .db file (or .csv log) directly back into your GitHub
+    repository using the GitHub REST API—no external database server required!
+    """
+    if not os.path.exists(local_file_path):
+        return False, f"File {local_file_path} does not exist yet."
+
+    with open(local_file_path, "rb") as f:
+        content_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    api_url = f"https://api.github.com/repos/{repo_full_name}/contents/{local_file_path}"
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+
+    # Check if file already exists in repo to get its SHA
+    r_get = requests.get(api_url, headers=headers, params={"ref": branch}, timeout=10)
+    sha = r_get.json().get("sha") if r_get.status_code == 200 else None
+
+    payload = {
+        "message": f"Auto-sync OpenWhale DB ({local_file_path}) [{dt.datetime.now().strftime('%Y-%m-%d %H:%M')}]",
+        "content": content_b64,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r_put = requests.put(api_url, headers=headers, json=payload, timeout=15)
+    if r_put.status_code in (200, 201):
+        return True, f"✅ Successfully committed `{local_file_path}` to `{repo_full_name}`!"
+    return False, f"❌ GitHub API Error ({r_put.status_code}): {r_put.text[:180]}"
+
 
 # ==========================================
 # CORE WATCHLIST UNIVERSE
@@ -48,7 +295,7 @@ OCC_REGEX = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
 
 
 # ==========================================
-# 1. LIVE TECHNICAL & EXTENDED-HOURS ENGINE
+# 2. STABILIZED TECHNICAL & DURATION ENGINE
 # ==========================================
 def compute_rsi(series, period=14):
     delta = series.diff()
@@ -58,11 +305,13 @@ def compute_rsi(series, period=14):
     return pd.Series(100 - (100 / (1 + rs)), index=series.index)
 
 
-@st.cache_data(ttl=25)
+@st.cache_data(ttl=60)
 def fetch_live_spot_and_intraday(ticker):
     """
-    Pulls 5-minute candles INCLUDING Pre-Market and After-Hours (prepost=True)
-    and computes real-time VWAP, EMA(9/21), RSI(14), and Relative Volume.
+    Pulls 5-minute candles AND computes a 15-minute smoothed institutional anchor
+    so 5-Star signals don't flip-flop on every 1-minute price tick.
+    Also calculates Signal Duration (consecutive minutes on current side of VWAP)
+    and Signal Strength Trajectory (whether momentum is gaining or fading).
     """
     tk = yf.Ticker(ticker)
     df = tk.history(period="5d", interval="5m", prepost=True)
@@ -83,6 +332,8 @@ def fetch_live_spot_and_intraday(ticker):
     df["VWAP"] = np.where(daily_cum_vol > 0, daily_cum_typvol / daily_cum_vol, df["Close"])
 
     spot = float(df["Close"].iloc[-1])
+    # 15-minute (3-bar) smoothed price anchor prevents rating flicker on single-tick noise
+    smoothed_spot = float(df["Close"].tail(3).mean())
     prev_close = float(daily["Close"].iloc[-2]) if len(daily) >= 2 else float(daily["Close"].iloc[-1])
     change_pct = ((spot - prev_close) / prev_close) * 100.0
     vwap = float(df["VWAP"].iloc[-1])
@@ -90,15 +341,46 @@ def fetch_live_spot_and_intraday(ticker):
     ema9 = float(df["EMA9"].iloc[-1])
     ema21 = float(df["EMA21"].iloc[-1])
 
+    # Calculate Signal Persistence Duration (consecutive 5m bars holding above/below VWAP)
+    above_vwap_now = smoothed_spot >= vwap
+    consecutive_bars = 0
+    for _, r in df.iloc[::-1].iterrows():
+        if (float(r["Close"]) >= float(r["VWAP"])) == above_vwap_now:
+            consecutive_bars += 1
+        else:
+            break
+    duration_mins = consecutive_bars * 5
+    if duration_mins >= 60:
+        duration_label = f"{duration_mins // 60}h {duration_mins % 60}m ({consecutive_bars} bars)"
+    else:
+        duration_label = f"{duration_mins} mins ({consecutive_bars} bars)"
+
+    # Calculate Signal Strength Trajectory (comparing current EMA spread & VWAP spread to 30 mins ago)
+    spread_now = abs(ema9 - ema21) / max(spot, 1) * 1000
+    if len(df) >= 7:
+        ema9_prev = float(df["EMA9"].iloc[-7])
+        ema21_prev = float(df["EMA21"].iloc[-7])
+        spread_prev = abs(ema9_prev - ema21_prev) / max(spot, 1) * 1000
+    else:
+        spread_prev = spread_now
+
+    if duration_mins <= 20:
+        strength_trend = "⚡ Newly Triggered (<20m)"
+    elif spread_now > spread_prev * 1.08:
+        strength_trend = "🔥 Gaining Strength (Accelerating)"
+    elif spread_now < spread_prev * 0.90:
+        strength_trend = "❄️ Momentum Cooling (Take Partial Profit)"
+    else:
+        strength_trend = "💪 Holding Steady (Locked In)"
+
     avg_vol = float(daily["Volume"].iloc[:-1].mean()) if len(daily) > 1 else 1.0
     today_vol = float(daily["Volume"].iloc[-1])
     rvol = round(today_vol / avg_vol, 2) if avg_vol > 0 else 1.0
 
-    last_bar_time = df.index[-1].strftime("%Y-%m-%d %H:%M:%S %Z")
-
     return {
         "ticker": ticker,
         "spot": round(spot, 2),
+        "smoothed_spot": round(smoothed_spot, 2),
         "prev_close": round(prev_close, 2),
         "change_pct": round(change_pct, 2),
         "vwap": round(vwap, 2),
@@ -106,14 +388,16 @@ def fetch_live_spot_and_intraday(ticker):
         "ema9": round(ema9, 2),
         "ema21": round(ema21, 2),
         "rvol": rvol,
-        "last_bar_time": last_bar_time,
+        "duration_mins": duration_mins,
+        "duration_label": duration_label,
+        "strength_trend": strength_trend,
         "intraday_df": df,
         "daily_df": daily,
     }
 
 
 # ==========================================
-# 2. LIVE CBOE OPTIONS FLOW & SWEEP ENGINE
+# 3. LIVE CBOE OPTIONS FLOW & SWEEP ENGINE
 # ==========================================
 def calc_bs_gamma(S, K, T, r, sigma):
     T = np.maximum(T, 4 / (365 * 24))
@@ -122,12 +406,8 @@ def calc_bs_gamma(S, K, T, r, sigma):
     return norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=90)
 def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expiries=4):
-    """
-    Pulls live options chain from CBOE CDN, calculates dealer GEX walls,
-    and isolates Institutional Sweeps & Block Orders with DTE timeframes.
-    """
     clean_sym = ticker_symbol.upper().strip().replace("^", "")
     index_tickers = {"SPX", "VIX", "NDX", "RUT", "DJX", "XSP"}
     cboe_sym = f"_{clean_sym}" if clean_sym in index_tickers else clean_sym
@@ -291,10 +571,15 @@ def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expirie
 
 
 # ==========================================
-# 3. 5-STAR RATING & TRADE TICKET CALCULATOR
+# 4. STABILIZED 5-STAR RATING & PERSISTENCE ENGINE
 # ==========================================
 def evaluate_star_rating(spot_info, opt_info):
+    """
+    Uses 15-minute smoothed price (`smoothed_spot`) so ratings stay rock-solid
+    across refreshes, plus outputs `strength_trend` and `duration_label`.
+    """
     spot = spot_info["spot"]
+    anchor_p = spot_info["smoothed_spot"]
     vwap = spot_info["vwap"]
     rsi = spot_info["rsi"]
     ema_bull = spot_info["ema9"] >= spot_info["ema21"]
@@ -308,36 +593,36 @@ def evaluate_star_rating(spot_info, opt_info):
     call_sweeps = len(sweeps[sweeps["raw_type"] == "call"]) if not sweeps.empty else 0
     put_sweeps = len(sweeps[sweeps["raw_type"] == "put"]) if not sweeps.empty else 0
 
-    is_bullish = (spot >= vwap and call_pct >= 50.0) or (call_pct >= 60.0)
+    is_bullish = (anchor_p >= vwap and call_pct >= 50.0) or (call_pct >= 60.0)
 
     stars = 0
     checklist = []
 
     if is_bullish:
         bias = "LONG"
-        if spot >= vwap and ema_bull:
+        if anchor_p >= vwap * 0.999 and ema_bull:
             stars += 1
-            checklist.append(f"⭐ Trend Aligned: Spot (${spot}) > VWAP (${vwap}) & EMA9 > EMA21")
+            checklist.append(f"⭐ Trend Aligned: 15m Anchor (${anchor_p}) > Fair Price VWAP (${vwap})")
         else:
-            checklist.append(f"⚪ Trend Mixed: Spot (${spot}) vs VWAP (${vwap})")
+            checklist.append(f"⚪ Trend Mixed: Anchor (${anchor_p}) vs VWAP (${vwap})")
 
-        if spot >= zero_gamma:
+        if anchor_p >= zero_gamma * 0.999:
             stars += 1
-            checklist.append(f"⭐ Dealer Regime: Above Zero Gamma (${zero_gamma})")
+            checklist.append(f"⭐ Dealer Regime: Above Danger Line (${zero_gamma})")
         else:
-            checklist.append(f"⚪ Dealer Regime: Below Zero Gamma (${zero_gamma})")
+            checklist.append(f"⚪ Dealer Regime: Below Danger Line (${zero_gamma})")
 
-        if call_pct >= 58.0:
+        if call_pct >= 56.0:
             stars += 1
-            checklist.append(f"⭐ Options Flow: {call_pct:.1f}% Bullish Call Premium")
+            checklist.append(f"⭐ Smart Money Flow: {call_pct:.1f}% Bullish Call Buying")
         else:
-            checklist.append(f"⚪ Options Flow: {call_pct:.1f}% Call Premium (<58%)")
+            checklist.append(f"⚪ Smart Money Flow: {call_pct:.1f}% Call Buying (<56%)")
 
         if call_sweeps >= 2:
             stars += 1
-            checklist.append(f"⭐ Whale Sweeps: {call_sweeps} Large Call Sweeps Active")
+            checklist.append(f"⭐ Whale Sweeps: {call_sweeps} Urgent Call Sweeps")
         else:
-            checklist.append(f"⚪ Whale Sweeps: Only {call_sweeps} Call Sweeps")
+            checklist.append(f"⚪ Whale Sweeps: {call_sweeps} Call Sweeps")
 
         target = call_wall if call_wall > spot * 1.005 else round(spot * 1.02, 2)
         stop = round(max(put_wall, min(vwap, zero_gamma) * 0.994, spot * 0.988), 2)
@@ -345,39 +630,39 @@ def evaluate_star_rating(spot_info, opt_info):
             stop = round(spot * 0.99, 2)
         rr = round((target - spot) / max(spot - stop, 0.01), 2)
 
-        if 32.0 <= rsi <= 68.0 and rr >= 1.5:
+        if 32.0 <= rsi <= 69.0 and rr >= 1.4:
             stars += 1
-            checklist.append(f"⭐ Risk/Reward & RSI: R:R is {rr}:1 with Healthy RSI ({rsi})")
+            checklist.append(f"⭐ Risk/Reward & Fever: R:R {rr}:1 | RSI {rsi}")
         else:
-            checklist.append(f"⚪ Risk/Reward or RSI: R:R {rr}:1 | RSI {rsi}")
+            checklist.append(f"⚪ Risk/Reward or Fever: R:R {rr}:1 | RSI {rsi}")
 
     else:
         bias = "SHORT"
         put_pct = 100.0 - call_pct
 
-        if spot < vwap and not ema_bull:
+        if anchor_p < vwap * 1.001 and not ema_bull:
             stars += 1
-            checklist.append(f"⭐ Trend Aligned: Spot (${spot}) < VWAP (${vwap}) & EMA9 < EMA21")
+            checklist.append(f"⭐ Trend Aligned: 15m Anchor (${anchor_p}) < Fair Price VWAP (${vwap})")
         else:
-            checklist.append(f"⚪ Trend Mixed: Spot (${spot}) vs VWAP (${vwap})")
+            checklist.append(f"⚪ Trend Mixed: Anchor (${anchor_p}) vs VWAP (${vwap})")
 
-        if spot < zero_gamma:
+        if anchor_p < zero_gamma * 1.001:
             stars += 1
-            checklist.append(f"⭐ Dealer Regime: Below Zero Gamma (${zero_gamma}) — Fast Drop Zone")
+            checklist.append(f"⭐ Dealer Regime: Below Danger Line (${zero_gamma}) — Fast Drop")
         else:
-            checklist.append(f"⚪ Dealer Regime: Above Zero Gamma (${zero_gamma})")
+            checklist.append(f"⚪ Dealer Regime: Above Danger Line (${zero_gamma})")
 
-        if put_pct >= 58.0:
+        if put_pct >= 56.0:
             stars += 1
-            checklist.append(f"⭐ Options Flow: {put_pct:.1f}% Bearish Put Premium")
+            checklist.append(f"⭐ Smart Money Flow: {put_pct:.1f}% Bearish Put Buying")
         else:
-            checklist.append(f"⚪ Options Flow: {put_pct:.1f}% Put Premium (<58%)")
+            checklist.append(f"⚪ Smart Money Flow: {put_pct:.1f}% Put Buying (<56%)")
 
         if put_sweeps >= 2:
             stars += 1
-            checklist.append(f"⭐ Whale Sweeps: {put_sweeps} Large Put Sweeps Active")
+            checklist.append(f"⭐ Whale Sweeps: {put_sweeps} Urgent Put Sweeps")
         else:
-            checklist.append(f"⚪ Whale Sweeps: Only {put_sweeps} Put Sweeps")
+            checklist.append(f"⚪ Whale Sweeps: {put_sweeps} Put Sweeps")
 
         target = put_wall if put_wall < spot * 0.995 else round(spot * 0.98, 2)
         stop = round(min(call_wall, max(vwap, zero_gamma) * 1.006, spot * 1.012), 2)
@@ -385,21 +670,24 @@ def evaluate_star_rating(spot_info, opt_info):
             stop = round(spot * 1.01, 2)
         rr = round((spot - target) / max(stop - spot, 0.01), 2)
 
-        if 32.0 <= rsi <= 68.0 and rr >= 1.5:
+        if 31.0 <= rsi <= 68.0 and rr >= 1.4:
             stars += 1
-            checklist.append(f"⭐ Risk/Reward & RSI: R:R is {rr}:1 with Healthy RSI ({rsi})")
+            checklist.append(f"⭐ Risk/Reward & Fever: R:R {rr}:1 | RSI {rsi}")
         else:
-            checklist.append(f"⚪ Risk/Reward or RSI: R:R {rr}:1 | RSI {rsi}")
+            checklist.append(f"⚪ Risk/Reward or Fever: R:R {rr}:1 | RSI {rsi}")
 
     star_str = "⭐" * stars + "☆" * (5 - stars)
     label = f"{star_str} ({stars}/5) — {'🟢 ACTIONABLE LONG' if (stars >= 4 and bias == 'LONG') else ('🔴 ACTIONABLE SHORT' if (stars >= 4 and bias == 'SHORT') else '🟡 WAIT FOR 4–5 STARS')}"
 
-    return {
+    result = {
         "ticker": spot_info["ticker"],
         "stars": stars,
         "star_str": star_str,
         "bias": bias,
         "verdict_label": label,
+        "strength_trend": spot_info["strength_trend"],
+        "duration_label": spot_info["duration_label"],
+        "duration_mins": spot_info["duration_mins"],
         "spot": spot,
         "vwap": vwap,
         "zero_gamma": zero_gamma,
@@ -409,15 +697,18 @@ def evaluate_star_rating(spot_info, opt_info):
         "rr": rr,
         "rsi": rsi,
         "call_pct": call_pct,
-        "call_sweeps": call_sweeps,
-        "put_sweeps": put_sweeps,
+        "sweeps_summary": f"{call_sweeps}C / {put_sweeps}P",
         "checklist": checklist,
         "Expected_Timeframe": "1–4 Hours (Intraday) to 2 Days",
     }
 
+    # Auto-log 4-Star and 5-Star signals to SQLite DB
+    log_signal_to_db(result)
+    return result
+
 
 # ==========================================
-# 4. REAL HISTORICAL 5-STAR BACKTEST ENGINE
+# 5. REAL HISTORICAL 5-STAR BACKTEST ENGINE
 # ==========================================
 @st.cache_data(ttl=600)
 def run_real_5star_backtest(tickers, lookback_days="30d"):
@@ -551,20 +842,15 @@ def run_real_5star_backtest(tickers, lookback_days="30d"):
 
 
 # ==========================================
-# 5. CONGRESS (STOCK ACT) & SEC INSIDER SCRAPER
+# 6. CONGRESS (STOCK ACT) & SEC INSIDER SCRAPER
 # ==========================================
 @st.cache_data(ttl=1800)
 def fetch_congress_trades(ticker_filter=None):
-    """
-    Pulls public U.S. House & Senate STOCK Act disclosures from free open-source
-    JSON mirrors (House/Senate Stock Watcher & Capitol Trades public feeds).
-    """
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     urls = [
         "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json",
         "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json",
     ]
-
     records = []
     for url in urls:
         try:
@@ -602,10 +888,6 @@ def fetch_congress_trades(ticker_filter=None):
 
 @st.cache_data(ttl=1800)
 def fetch_sec_insider_trades(ticker_filter=None):
-    """
-    Scrapes real-time SEC Form 4 Corporate Insider Purchases & Sales (CEOs, CFOs,
-    Directors, 10% Owners) directly from OpenInsider's public tables.
-    """
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     if ticker_filter:
         url = (
@@ -620,7 +902,6 @@ def fetch_sec_insider_trades(ticker_filter=None):
             "&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=100&vh=&ocl=&och=&sic1=-1&sicl=100"
             "&sich=9999&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=50&page=1"
         )
-
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         tables = pd.read_html(resp.text)
@@ -643,50 +924,92 @@ def fetch_sec_insider_trades(ticker_filter=None):
 
 
 # ==========================================
-# 6. SIDEBAR & LIVE STREAM CONTROLS
+# 7. SIDEBAR CONTROLS & GITHUB DB SYNC PANEL
 # ==========================================
 st.sidebar.title("🐋 OpenWhale Live")
-st.sidebar.caption("Streamlined Spot, Options Sweeps, 5-Star Backtester & Congress")
+st.sidebar.caption("Plain-English Stream, Signal Duration, SQLite DB & Congress")
+
+use_plain_english = st.sidebar.toggle(
+    "🗣️ Use Everyday Plain-English Terminology",
+    value=True,
+    help="ON: Uses beginner-friendly labels like 'Price Floor', 'Price Ceiling', 'Fair Price', and 'Fever Score'. OFF: Uses institutional quant labels like 'Put Wall (-GEX)', 'Call Wall (+GEX)', 'VWAP', and 'RSI(14)'.",
+)
 
 active_ticker = st.sidebar.selectbox("🎯 Select Primary Ticker to Stream:", options=DEFAULT_WATCHLIST, index=0)
 custom_sym = st.sidebar.text_input("Or Type Custom Symbol (e.g. SPX, PLTR):", value="").upper().strip()
 if custom_sym:
     active_ticker = custom_sym
 
-live_stream_on = st.sidebar.toggle("⚡ Enable Live 30s Auto-Stream", value=False)
+live_stream_on = st.sidebar.toggle("⚡ Enable Live 45s Auto-Stream", value=False)
 min_sweep_usd = st.sidebar.selectbox("Minimum Institutional Sweep Size ($):", [25000, 50000, 100000, 250000], index=1)
 
-st.title("🐋 OpenWhale: Live Spot, Institutional Sweeps, 5-Star Backtester & Congress")
+st.sidebar.markdown("---")
+with st.sidebar.expander("💾 Sync SQLite DB Back to GitHub", expanded=False):
+    st.caption("Commit `openwhale_signals.db` and `.csv` directly to your GitHub repo.")
+    default_repo = st.secrets.get("GITHUB_REPO", "") if "GITHUB_REPO" in st.secrets else ""
+    default_token = st.secrets.get("GITHUB_TOKEN", "") if "GITHUB_TOKEN" in st.secrets else ""
+    gh_repo = st.text_input("GitHub Repo (`username/repo`):", value=default_repo)
+    gh_token = st.text_input("GitHub Personal Access Token:", value=default_token, type="password")
+    if st.button("☁️ Commit DB to GitHub Now", use_container_width=True):
+        if gh_repo and gh_token:
+            ok1, msg1 = push_file_to_github(DB_PATH, gh_repo, github_token=gh_token)
+            ok2, msg2 = push_file_to_github(CSV_BACKUP_PATH, gh_repo, github_token=gh_token)
+            if ok1:
+                st.success(msg1)
+            else:
+                st.error(msg1)
+        else:
+            st.warning("Enter both your `username/repo` and GitHub Token above.")
+
+st.title("🐋 OpenWhale: Live Stream, Signal Persistence, SQLite DB & Backtester")
+render_hover_glossary_banner()
 
 try:
     spot_info = fetch_live_spot_and_intraday(active_ticker)
     opt_info = fetch_live_options_and_sweeps(active_ticker, spot_override=spot_info["spot"])
     star_eval = evaluate_star_rating(spot_info, opt_info)
 
-    # Top Live Spot & Star Rating Banner
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric(f"📡 {active_ticker} Live Spot", f"${spot_info['spot']:,.2f}", f"{spot_info['change_pct']:+.2f}%")
-    k2.metric(
-        "Fair Price (VWAP)",
-        f"${spot_info['vwap']:,.2f}",
-        "Above VWAP" if spot_info["spot"] >= spot_info["vwap"] else "Below VWAP",
-    )
-    k3.metric("Price Floor (Put Wall)", f"${opt_info['put_wall']:,.2f}", "Dealer Support")
-    k4.metric("Price Ceiling (Call Wall)", f"${opt_info['call_wall']:,.2f}", "Dealer Target")
-    k5.metric(
-        "Smart Money Call %",
-        f"{opt_info['call_pct']:.1f}%",
-        f"${opt_info['call_prem_m']}M C / ${opt_info['put_prem_m']}M P",
-    )
-    k6.metric("Setup Rating", star_eval["star_str"], f"R:R {star_eval['rr']} : 1")
+    # Dynamic Plain-English vs Quant Labels for Top KPI Cards
+    lbl_vwap = "Fair Value Price (VWAP)" if use_plain_english else "Session VWAP ($)"
+    lbl_floor = "Price Floor (Safety Net)" if use_plain_english else "Put Wall (-GEX)"
+    lbl_ceil = "Price Ceiling (Target)" if use_plain_english else "Call Wall (+GEX)"
+    lbl_flow = "Smart Money Call Buying" if use_plain_english else "Call Premium Flow %"
 
-    # Main 4-Tab Interface
-    tab_stream, tab_scanner, tab_backtest, tab_congress = st.tabs(
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric(
+        f"📡 {active_ticker} Live Price",
+        f"${spot_info['spot']:,.2f}",
+        f"{spot_info['change_pct']:+.2f}%",
+        help=GLOSSARY_TOOLTIPS["spot"],
+    )
+    k2.metric(
+        lbl_vwap,
+        f"${spot_info['vwap']:,.2f}",
+        "Buyers Winning (Above)" if spot_info["spot"] >= spot_info["vwap"] else "Sellers Winning (Below)",
+        help=GLOSSARY_TOOLTIPS["entry"],
+    )
+    k3.metric(lbl_floor, f"${opt_info['put_wall']:,.2f}", "Support Zone", help="Big banks buy shares here.")
+    k4.metric(lbl_ceil, f"${opt_info['call_wall']:,.2f}", "Resistance Zone", help="Big banks sell shares here.")
+    k5.metric(
+        "⏳ Signal Duration",
+        spot_info["duration_label"],
+        spot_info["strength_trend"],
+        help=GLOSSARY_TOOLTIPS["duration_label"],
+    )
+    k6.metric(
+        "Stabilized Rating",
+        star_eval["star_str"],
+        f"R:R {star_eval['rr']} : 1",
+        help=GLOSSARY_TOOLTIPS["star_str"],
+    )
+
+    tab_stream, tab_scanner, tab_backtest, tab_db, tab_congress = st.tabs(
         [
-            f"📡 1. Live Spot & Institutional Sweeps ({active_ticker})",
-            "⭐ 2. Live 5-Star Trade Finder (Multi-Ticker)",
+            f"📡 1. Live Stream & Sweeps ({active_ticker})",
+            "⭐ 2. Stabilized 5-Star Scanner (w/ Strength Duration)",
             "📊 3. Historical 5-Star Backtest Engine",
-            "🏛️ 4. Congress & Corporate Insider Filings",
+            "💾 4. SQLite Signal Database & GitHub Sync",
+            "🏛️ 5. Congress & Corporate Insider Filings",
         ]
     )
 
@@ -698,13 +1021,13 @@ try:
         st.markdown(
             f"""
             <div class="star-card">
-                <h3 style="margin:0; color:#f8fafc;">{star_eval['verdict_label']}</h3>
+                <h3 style="margin:0; color:#f8fafc;">{star_eval['verdict_label']} &nbsp;—&nbsp; <span style="color:#38bdf8;">{star_eval['strength_trend']}</span></h3>
                 <p style="margin:6px 0; color:#eab308; font-weight:600;">
                     🎯 Entry: ${star_eval['entry']} &nbsp;&nbsp;|&nbsp;&nbsp;
                     🛑 Stop-Loss: ${star_eval['stop']} &nbsp;&nbsp;|&nbsp;&nbsp;
-                    💰 Wall Target: ${star_eval['target']} &nbsp;&nbsp;|&nbsp;&nbsp;
+                    💰 Target: ${star_eval['target']} &nbsp;&nbsp;|&nbsp;&nbsp;
                     ⚖️ Reward:Risk: {star_eval['rr']} : 1 &nbsp;&nbsp;|&nbsp;&nbsp;
-                    ⏱️ Timeframe: {star_eval['Expected_Timeframe']}
+                    ⏳ Trend Duration: {star_eval['duration_label']}
                 </p>
                 <p style="margin:0; font-size:0.84rem; color:#cbd5e1;">{checks_html}</p>
             </div>
@@ -715,7 +1038,7 @@ try:
         col_chart, col_sweeps = st.columns([0.48, 0.52])
 
         with col_chart:
-            st.subheader(f"📈 {active_ticker} Live 5m Stream + VWAP & Dealer Walls")
+            st.subheader(f"📈 {active_ticker} Live 5m Stream + {lbl_vwap} & Walls")
             intra_df = spot_info["intraday_df"].tail(75)
 
             fig = go.Figure()
@@ -726,7 +1049,7 @@ try:
                     high=intra_df["High"],
                     low=intra_df["Low"],
                     close=intra_df["Close"],
-                    name="Spot Price",
+                    name="Price",
                 )
             )
             fig.add_trace(
@@ -734,7 +1057,7 @@ try:
                     x=intra_df.index,
                     y=intra_df["VWAP"],
                     mode="lines",
-                    name="Fair Price (VWAP)",
+                    name=lbl_vwap,
                     line=dict(color="#38bdf8", width=2),
                 )
             )
@@ -742,23 +1065,23 @@ try:
                 y=opt_info["call_wall"],
                 line_dash="dash",
                 line_color="#22c55e",
-                annotation_text=f"Ceiling (Call Wall): ${opt_info['call_wall']}",
+                annotation_text=f"{lbl_ceil}: ${opt_info['call_wall']}",
             )
             fig.add_hline(
                 y=opt_info["put_wall"],
                 line_dash="dash",
                 line_color="#ef4444",
-                annotation_text=f"Floor (Put Wall): ${opt_info['put_wall']}",
+                annotation_text=f"{lbl_floor}: ${opt_info['put_wall']}",
             )
             fig.add_hline(
                 y=opt_info["zero_gamma"],
                 line_dash="dot",
                 line_color="#eab308",
-                annotation_text=f"Danger Line: ${opt_info['zero_gamma']}",
+                annotation_text=f"{'Danger Line' if use_plain_english else 'Zero Gamma'}: ${opt_info['zero_gamma']}",
             )
             fig.update_layout(
                 template="plotly_dark",
-                height=470,
+                height=460,
                 xaxis_rangeslider_visible=False,
                 margin=dict(t=20, l=10, r=10, b=10),
                 legend=dict(orientation="h", y=1.08),
@@ -767,43 +1090,58 @@ try:
 
         with col_sweeps:
             st.subheader(f"🚨 Live Institutional Sweep Orders & Timeframes ({active_ticker})")
-            st.caption(
-                "Real CBOE options contracts where today's volume exceeds Open Interest (`Vol/OI >= 1.25x`), grouped by expiration timeframe (`0DTE`, `Weekly`, `Swing`, `Macro`)."
-            )
             sweeps = opt_info["sweeps_df"]
             filtered_sweeps = (
                 sweeps[sweeps["Premium_USD"] >= min_sweep_usd].copy() if not sweeps.empty else pd.DataFrame()
             )
 
             if not filtered_sweeps.empty:
-                filtered_sweeps["Premium ($)"] = filtered_sweeps["Premium_USD"].apply(lambda x: f"${x:,.0f}")
-                filtered_sweeps["Strike ($)"] = filtered_sweeps["Strike"].apply(lambda x: f"${x:g}")
+                filtered_sweeps["Money Spent ($)"] = filtered_sweeps["Premium_USD"].apply(lambda x: f"${x:,.0f}")
+                filtered_sweeps["Strike Price ($)"] = filtered_sweeps["Strike"].apply(lambda x: f"${x:g}")
                 filtered_sweeps["Urgency (Vol/OI)"] = filtered_sweeps["Vol_OI_Ratio"].apply(lambda x: f"{x:.2f}x")
 
-                sweep_cols = [
-                    "Trade_Time",
-                    "Type",
-                    "Strike ($)",
-                    "Expiration",
-                    "Timeframe_Horizon",
-                    "Premium ($)",
-                    "Execution_Side",
-                    "Urgency (Vol/OI)",
-                    "Volume",
-                    "Open_Interest",
-                ]
-                st.dataframe(filtered_sweeps[sweep_cols].head(20), use_container_width=True, hide_index=True, height=430)
+                sweep_col_map = (
+                    {
+                        "Trade_Time": "Time",
+                        "Type": "Direction",
+                        "Strike Price ($)": "Target Strike ($)",
+                        "Expiration": "Expiry Date",
+                        "Timeframe_Horizon": "Trade Timeframe",
+                        "Money Spent ($)": "Money Spent ($)",
+                        "Execution_Side": "Buyer Aggression",
+                        "Urgency (Vol/OI)": "Urgency vs Normal",
+                    }
+                    if use_plain_english
+                    else {
+                        "Trade_Time": "Timestamp",
+                        "Type": "Type",
+                        "Strike Price ($)": "Strike",
+                        "Expiration": "Expiry",
+                        "Timeframe_Horizon": "DTE Bucket",
+                        "Money Spent ($)": "Notional ($)",
+                        "Execution_Side": "Tape Side",
+                        "Urgency (Vol/OI)": "Vol/OI",
+                    }
+                )
+                st.dataframe(
+                    filtered_sweeps[list(sweep_col_map.keys())].rename(columns=sweep_col_map).head(20),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=430,
+                )
             else:
                 st.info(f"No sweeps above ${min_sweep_usd:,.0f} right now—lower the minimum sweep filter in the sidebar.")
 
     # ==========================================
-    # TAB 2: LIVE 5-STAR TRADE FINDER (MULTI-TICKER)
+    # TAB 2: STABILIZED 5-STAR SCANNER + DURATION
     # ==========================================
     with tab_scanner:
-        st.subheader("⭐ Live 5-Star Trade Scanner (Filters Only Top Actionable Setups)")
-        st.caption("Scans the top liquid tickers in parallel and ranks them from 5 Stars (`⭐⭐⭐⭐⭐`) down.")
+        st.subheader("⭐ Stabilized 5-Star Trade Scanner (With Signal Duration & Strength Meter)")
+        st.caption(
+            "Anchored to 15-minute smoothed institutional candles so ratings don't flicker, and automatically logs every 4–5 Star setup into the SQLite database."
+        )
 
-        if st.button("🚀 Scan Watchlist for 5-Star Trades Now", type="primary"):
+        if st.button("🚀 Scan Watchlist & Log 5-Star Setups to DB", type="primary"):
             st.cache_data.clear()
 
         def scan_star_worker(sym):
@@ -814,7 +1152,7 @@ try:
             except Exception:
                 return None
 
-        with st.spinner("Evaluating 5-Star Confluence across liquid market leaders..."):
+        with st.spinner("Scanning watchlist & logging 4–5 Star signals to SQLite..."):
             star_rows = []
             with ThreadPoolExecutor(max_workers=8) as ex:
                 futs = {ex.submit(scan_star_worker, sym): sym for sym in DEFAULT_WATCHLIST[:18]}
@@ -825,28 +1163,57 @@ try:
 
         if star_rows:
             star_df = (
-                pd.DataFrame(star_rows).sort_values(["stars", "rr"], ascending=[False, False]).reset_index(drop=True)
+                pd.DataFrame(star_rows)
+                .sort_values(["stars", "duration_mins", "rr"], ascending=[False, False, False])
+                .reset_index(drop=True)
             )
             only_top = st.checkbox("Show Only 4-Star & 5-Star Actionable Trades", value=False)
             if only_top:
                 star_df = star_df[star_df["stars"] >= 4]
 
-            show_cols = {
-                "ticker": "Ticker",
-                "star_str": "Star Rating",
-                "verdict_label": "Action Verdict",
-                "spot": "Live Spot ($)",
-                "entry": "Entry ($)",
-                "stop": "Stop-Loss ($)",
-                "target": "Wall Target ($)",
-                "rr": "Reward:Risk",
-                "call_pct": "Call Flow %",
-                "call_sweeps": "Call Sweeps",
-                "put_sweeps": "Put Sweeps",
-                "Expected_Timeframe": "Trade Timeframe",
+            scanner_col_map = (
+                {
+                    "ticker": "Stock Symbol",
+                    "star_str": "Star Rating",
+                    "verdict_label": "Plain-English Verdict",
+                    "strength_trend": "Signal Strength Trajectory",
+                    "duration_label": "Trend Duration (Above/Below Fair Price)",
+                    "spot": "Last Traded Price ($)",
+                    "entry": "Ideal Entry ($)",
+                    "stop": "Safety Stop-Loss ($)",
+                    "target": "Profit Target ($)",
+                    "rr": "Reward:Risk",
+                    "call_pct": "Smart Money Call %",
+                    "sweeps_summary": "Urgent Whale Sweeps",
+                }
+                if use_plain_english
+                else {
+                    "ticker": "Ticker",
+                    "star_str": "Rating",
+                    "verdict_label": "Signal Verdict",
+                    "strength_trend": "Momentum Regime",
+                    "duration_label": "VWAP Hold Duration",
+                    "spot": "Spot ($)",
+                    "entry": "Entry ($)",
+                    "stop": "Stop ($)",
+                    "target": "Wall Target ($)",
+                    "rr": "R:R Ratio",
+                    "call_pct": "Call Flow %",
+                    "sweeps_summary": "Sweeps (C/P)",
+                }
+            )
+
+            cols_order = list(scanner_col_map.keys())
+            help_cfg = {
+                scanner_col_map[k]: st.column_config.Column(
+                    label=scanner_col_map[k], help=GLOSSARY_TOOLTIPS.get(k, "")
+                )
+                for k in cols_order
             }
+
             st.dataframe(
-                star_df[list(show_cols.keys())].rename(columns=show_cols),
+                star_df[cols_order].rename(columns=scanner_col_map),
+                column_config=help_cfg,
                 use_container_width=True,
                 hide_index=True,
                 height=500,
@@ -857,14 +1224,6 @@ try:
     # ==========================================
     with tab_backtest:
         st.subheader("📊 Real Historical Backtest: How Top 5-Star Setups Performed (Last 30 Days)")
-        st.markdown(
-            """
-            This backtester pulls **real 15-minute historical market candles over the past 30 days** across your watchlist and tests the exact **5-Star Confluence Rules**:
-            * **Entry Trigger:** Price crosses/holds **VWAP** + **EMA(9) > EMA(21)** + **Institutional Volume Surge >= 1.8x normal** + **Healthy RSI (45–67 Long / 33–55 Short)**.
-            * **Risk & Exit Rules:** Hard Stop-Loss at `1.2x ATR` (`-1.0R`), Profit Target at `2.4x ATR` (`+2.0R`, i.e., **2.0 : 1 Reward-to-Risk**), or End-of-Day (`15:45 ET`) time exit if neither is hit.
-            """
-        )
-
         bt_df = run_real_5star_backtest(DEFAULT_WATCHLIST[:16], lookback_days="30d")
 
         if not bt_df.empty:
@@ -905,21 +1264,49 @@ try:
                 margin=dict(t=35, l=10, r=10, b=10),
             )
             st.plotly_chart(fig_bt, use_container_width=True)
-
-            st.markdown("#### 📜 Verified 30-Day Trade-by-Trade Execution Log (5-Star Signals Only)")
-            st.dataframe(bt_df, use_container_width=True, hide_index=True, height=450)
-        else:
-            st.warning("No historical 15m data returned for backtest window.")
+            st.dataframe(bt_df, use_container_width=True, hide_index=True, height=420)
 
     # ==========================================
-    # TAB 4: CONGRESS & CORPORATE INSIDER TRACKER
+    # TAB 4: SQLITE SIGNAL DATABASE & GITHUB SYNC
+    # ==========================================
+    with tab_db:
+        st.subheader("💾 Persistent SQLite Signal Database (`openwhale_signals.db`)")
+        st.caption(
+            "Automatically records every 4-Star and 5-Star trade triggered today, tracking when it first appeared (`first_seen_time`), how many consecutive scans confirmed it (`times_confirmed`), and how its price has moved since first entry."
+        )
+        db_df = read_signals_from_db()
+        if not db_df.empty:
+            db_df["Live_PnL_Since_First_Seen_%"] = np.where(
+                db_df["bias"] == "LONG",
+                ((db_df["latest_spot"] - db_df["entry_price"]) / db_df["entry_price"]) * 100.0,
+                ((db_df["entry_price"] - db_df["latest_spot"]) / db_df["entry_price"]) * 100.0,
+            ).round(2)
+            st.dataframe(db_df, use_container_width=True, hide_index=True, height=420)
+
+            c_dl1, c_dl2 = st.columns(2)
+            with c_dl1:
+                with open(DB_PATH, "rb") as f_db:
+                    st.download_button(
+                        "📥 Download Raw SQLite `.db` File",
+                        data=f_db.read(),
+                        file_name="openwhale_signals.db",
+                        mime="application/octet-stream",
+                    )
+            with c_dl2:
+                st.download_button(
+                    "📥 Download Signal History `.csv` File",
+                    data=db_df.to_csv(index=False).encode("utf-8"),
+                    file_name="openwhale_signals_log.csv",
+                    mime="text/csv",
+                )
+        else:
+            st.info("No 4-Star or 5-Star signals have been logged yet today. Run Tab 2's scanner to populate the database.")
+
+    # ==========================================
+    # TAB 5: CONGRESS & CORPORATE INSIDER TRACKER
     # ==========================================
     with tab_congress:
         st.subheader("🏛️ U.S. Congress (STOCK Act) & SEC Form 4 Corporate Insider Tracker")
-        st.caption(
-            "Tracks disclosed stock purchases/sales by U.S. Senators & House Representatives alongside real-time SEC Form 4 C-Suite Insider buying."
-        )
-
         filter_by_active = st.checkbox(
             f"🔍 Filter Filings Strictly for {active_ticker} (Uncheck to see All Market-Wide Filings)",
             value=False,
@@ -927,7 +1314,6 @@ try:
         target_sym = active_ticker if filter_by_active else None
 
         col_cong, col_ins = st.columns(2)
-
         with col_cong:
             st.markdown("#### 🏛️ Latest U.S. Congress Trades (STOCK Act Disclosures)")
             cong_df = fetch_congress_trades(target_sym)
@@ -948,5 +1334,5 @@ except Exception as e:
     st.error(f"Error loading live feed for {active_ticker}: {e}")
 
 if live_stream_on:
-    time.sleep(30)
+    time.sleep(45)
     st.rerun()
