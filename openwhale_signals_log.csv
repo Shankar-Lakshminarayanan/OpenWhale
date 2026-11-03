@@ -1,8 +1,9 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-03,XLP,21:10:16,21:10:16,1,5,5,SHORT,🔥 Gaining Strength,105,89.05,89.05,89.87,86.0,3.72,14.3
+2026-11-03,IWM,20:54:05,21:10:16,17,5,5,SHORT,🔥 Gaining Strength,110,279.66,279.55,280.0,277.0,5.67,30.1
+2026-11-03,XLF,20:58:04,21:10:15,16,5,5,SHORT,⚡ Newly Triggered,10,57.15,57.2,57.74,56.06,2.11,28.5
+2026-11-03,SQQQ,20:54:09,21:09:33,19,5,5,LONG,❄️ Cooling Off,20,42.71,42.77,42.41,45.0,6.19,81.5
 2026-11-03,META,21:07:16,21:07:16,1,5,5,LONG,❄️ Cooling Off,55,621.45,621.45,613.99,640.0,2.49,62.7
-2026-11-03,SQQQ,20:54:09,21:07:14,18,5,5,LONG,❄️ Cooling Off,20,42.71,42.78,42.41,45.0,6.0,81.5
-2026-11-03,IWM,20:54:05,21:07:12,15,5,5,SHORT,🔥 Gaining Strength,105,279.66,279.63,280.0,277.0,7.11,30.0
-2026-11-03,XLF,20:58:04,21:07:11,14,5,5,SHORT,⚡ Newly Triggered,0,57.15,57.21,57.74,56.07,2.15,28.3
 2026-11-03,AMZN,20:52:47,21:00:45,11,5,5,LONG,❄️ Cooling Off,305,251.69,250.74,250.0,260.0,12.51,76.3
 2026-11-03,MSFT,20:52:47,21:00:44,11,5,5,LONG,❄️ Cooling Off,385,522.28,520.77,520.0,540.0,24.97,76.4
 2026-11-03,IBIT,20:52:45,21:00:44,11,5,5,LONG,🔥 Gaining Strength,335,44.02,44.03,44.0,45.0,32.33,60.4
