@@ -1,4 +1,7 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-03,IBIT,20:52:45,20:52:45,1,5,5,LONG,🔥 Gaining Strength,330,44.02,44.02,43.49,45.0,1.85,61.8
+2026-11-03,EEM,20:52:45,20:52:45,1,5,5,SHORT,❄️ Cooling Off,285,61.01,61.01,61.74,57.0,5.49,15.7
+2026-11-03,TLT,20:52:44,20:52:44,1,5,5,LONG,⚡ Newly Triggered,0,81.11,81.11,80.53,82.73,2.79,67.0
 2026-11-02,TSLA,20:06:47,20:50:50,32,4,4,SHORT,💪 Holding Steady (Locked In),205,404.34,403.35,405.0,400.0,2.03,38.0
 2026-11-02,SPY,20:06:49,20:50:50,73,5,5,SHORT,🔥 Gaining Strength (Accelerating),280,755.45,753.52,756.0,738.45,6.08,15.7
 2026-11-02,SMH,20:06:50,20:50:50,59,5,5,SHORT,🔥 Gaining Strength (Accelerating),305,513.12,510.26,516.38,500.0,1.68,18.9
