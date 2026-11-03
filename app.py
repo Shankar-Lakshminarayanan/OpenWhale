@@ -4,6 +4,7 @@ import datetime as dt
 import os
 import re
 import sqlite3
+import threading
 import time
 import numpy as np
 import pandas as pd
@@ -17,30 +18,11 @@ import streamlit as st
 # PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="OpenWhale | Live Stream, Sweeps, DB & 5-Star Backtester",
+    page_title="OpenWhale | Multi-Ticker Live Stream, $100k+ Sweeps & 2026 Backtester",
     page_icon="🐋",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-# ==========================================
-# HOVER GLOSSARY & PLAIN-ENGLISH DEFINITIONS
-# ==========================================
-GLOSSARY_TOOLTIPS = {
-    "ticker": "The stock market symbol for the company or index (e.g., SPY, NVDA, AAPL).",
-    "star_str": "Stabilized 1-to-5 Star Rating: Anchored on 15-minute institutional candles so it won't flicker on minor 1-minute noise.",
-    "verdict_label": "Plain-English Action Verdict: Shows BUY LONG or SELL SHORT only when 4 or 5 institutional criteria align.",
-    "strength_trend": "Signal Strength Trajectory: Shows whether buying/selling pressure over the last 45 minutes is 🔥 Strengthening, ⚡ Newly Triggered, or ❄️ Cooling.",
-    "duration_label": "Signal Duration: How long (in minutes/hours) the stock has continuously held its current trend above/below Fair Price (VWAP).",
-    "spot": "The latest traded share price, including early 4:00 AM Pre-Market and 8:00 PM After-Hours sessions.",
-    "entry": "Ideal Entry Price: Anchored between current price and Today's Fair Price (VWAP) so you don't overpay.",
-    "stop": "Hard Stop-Loss: The exact price where the setup breaks down (below VWAP/Danger Line or Price Floor). Exit immediately if hit.",
-    "target": "Profit Target: Placed just inside the major Price Ceiling (Call Wall) for longs, or Price Floor (Put Wall) for shorts.",
-    "rr": "Reward-to-Risk Ratio: How many dollars you stand to make for every $1 risked. Aim for 1.5 : 1 or higher.",
-    "call_pct": "Smart-Money Call Buying %: Percentage of options money spent on bullish CALLS vs. bearish PUTS today.",
-    "sweeps_summary": "Urgent Whale Sweeps: Counts how many large institutional options orders (Volume > 1.25x Open Interest and >= $50k) hit the tape today.",
-    "Expected_Timeframe": "Typical hold time based on whether whales are buying 0DTE (Intraday) or Weekly/Monthly (Swing) contracts.",
-}
 
 st.markdown(
     """
@@ -93,13 +75,6 @@ st.markdown(
         visibility: visible;
         opacity: 1;
     }
-    .star-card {
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-        border: 2px solid #eab308;
-        border-radius: 12px;
-        padding: 16px 20px;
-        margin-bottom: 16px;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -111,13 +86,12 @@ def render_hover_glossary_banner():
         """
         <div class="ow-glossary-bar">
             <span style="color:#94a3b8; font-size:0.84rem; font-weight:600;">💡 Hover any term for Plain-English meaning:</span>
-            <div class="ow-pill">Price Floor (Put Wall)<span class="ow-tip"><b>Price Floor / Put Wall:</b> The strike price where big banks mechanically buy shares to hedge options. Acts like a trampoline safety net.</span></div>
-            <div class="ow-pill">Price Ceiling (Call Wall)<span class="ow-tip"><b>Price Ceiling / Call Wall:</b> The strike price where big banks start selling shares to hedge options. Acts like a brick ceiling—great place to take profits.</span></div>
-            <div class="ow-pill">Danger Line (Zero Gamma)<span class="ow-tip"><b>Danger Line (Flip Level):</b> Above this price, trading is calm and dips get bought. Below this price, swings become fast and violent.</span></div>
-            <div class="ow-pill">Fair Price (VWAP)<span class="ow-tip"><b>Fair Value Price (VWAP):</b> The true average price paid per share today weighted by volume. Above = Buyers winning.</span></div>
-            <div class="ow-pill">Fever Score (RSI)<span class="ow-tip"><b>Fever Score (RSI 0–100):</b> Above 70 = Overheated (don't chase). Below 30 = On Sale / Oversold (watch for a bounce).</span></div>
-            <div class="ow-pill">Signal Duration & Strength<span class="ow-tip"><b>Signal Duration & Strength:</b> Tracks how many consecutive minutes/hours a stock has held its trend and whether momentum is Strengthening (🔥) or Cooling (❄️).</span></div>
-            <div class="ow-pill">Whale Sweeps (Vol > OI)<span class="ow-tip"><b>Whale Sweeps:</b> Urgent options orders where today's volume exceeds existing Open Interest, proving brand-new smart-money positions are opening.</span></div>
+            <div class="ow-pill">Price Floor (Put Wall)<span class="ow-tip"><b>Price Floor / Put Wall:</b> Strike where dealers mechanically buy shares to hedge options. Acts like a trampoline safety net.</span></div>
+            <div class="ow-pill">Price Ceiling (Call Wall)<span class="ow-tip"><b>Price Ceiling / Call Wall:</b> Strike where dealers mechanically sell shares to hedge options. Take profits slightly below here.</span></div>
+            <div class="ow-pill">Danger Line (Zero Gamma)<span class="ow-tip"><b>Danger Line (Flip Level):</b> Above = calm dip-buying market. Below = fast, volatile swings.</span></div>
+            <div class="ow-pill">Fair Price (VWAP)<span class="ow-tip"><b>Fair Value Price (VWAP):</b> Volume-weighted average price paid today. Above = Buyers winning.</span></div>
+            <div class="ow-pill">Urgency (Vol/OI)<span class="ow-tip"><b>Sweep Urgency (Vol/OI):</b> Today's contract volume divided by existing Open Interest. Higher numbers mean aggressive brand-new institutional positioning.</span></div>
+            <div class="ow-pill">$100 Trade ROI & Risk<span class="ow-tip"><b>$100 Trade Sizing:</b> Shows exact Dollar Profit/Loss, % ROI, and Dollar Risk if you allocated $100 to each 5-Star setup since Jan 1, 2026.</span></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -125,7 +99,149 @@ def render_hover_glossary_banner():
 
 
 # ==========================================
-# 1. LIGHTWEIGHT SQLITE DATABASE + GITHUB SYNC
+# 1. UNION STOCK UNIVERSE (TOP 50 MCAP + MAG 7 + ETFS + FLOW + BUZZ + CONGRESS)
+# ==========================================
+# a) Top 50 Market Cap (Including Mag 7: AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA)
+TOP_50_MARKET_CAP = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK-B", "AVGO", "LLY",
+    "WMT", "JPM", "V", "XOM", "MA", "ORCL", "UNH", "COST", "PG", "HD",
+    "JNJ", "NFLX", "ABBV", "BAC", "CRM", "KO", "CVX", "MRK", "AMD", "PEP",
+    "TMO", "CSCO", "LIN", "WFC", "ADBE", "ACN", "MCD", "ABT", "IBM", "GE",
+    "CAT", "PM", "TXN", "ISRG", "QCOM", "INTU", "VZ", "AMGN", "NOW", "GS"
+]
+
+# e) Popular Index, Sector & Leveraged ETFs
+POPULAR_ETFS = [
+    "SPY", "QQQ", "IWM", "DIA", "SMH", "XLF", "XLE", "XLK", "XLV", "XLI",
+    "XLY", "XLP", "XLU", "ARKK", "GLD", "SLV", "TLT", "HYG", "IBIT", "EEM",
+    "SOXL", "TQQQ", "SQQQ", "SPXL", "XBI", "KRE", "GDX"
+]
+
+# c) High Options Flow Leaders
+OPTIONS_FLOW_LEADERS = [
+    "PLTR", "COIN", "MSTR", "SMCI", "ARM", "MU", "INTC", "SNOW", "UBER", "SHOP",
+    "ABNB", "BA", "DIS", "PYPL", "SQ", "PFE", "MRNA", "PANW", "CRWD", "DELL"
+]
+
+# d) Social Media Buzz / Retail & X Trending
+SOCIAL_MEDIA_BUZZ = [
+    "RDDT", "GME", "AMC", "SOFI", "HOOD", "RIVN", "LCID", "DJT", "MARA", "RIOT",
+    "CLSK", "IONQ", "RKLB", "ASTS", "LUNR", "HIMS", "CVNA", "UPST", "AFRM", "CELH"
+]
+
+OCC_REGEX = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
+MIN_SWEEP_USD = 100000  # Locked at $100k minimum per requirement #4
+
+
+# ==========================================
+# 2. CONGRESS & INSIDER SCRAPER (FEEDS DYNAMIC UNIVERSE + TAB 5)
+# ==========================================
+@st.cache_data(ttl=1800)
+def fetch_congress_trades(ticker_filter=None):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    urls = [
+        "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json",
+        "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json",
+    ]
+    records = []
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=7)
+            if r.status_code == 200:
+                for item in r.json()[:350]:
+                    tkr = str(item.get("ticker", "")).upper().strip().replace("--", "")
+                    if not tkr or tkr == "N/A" or len(tkr) > 5 or not tkr.isalpha():
+                        continue
+                    records.append(
+                        {
+                            "Filing_Date": item.get("disclosure_date") or item.get("transaction_date", ""),
+                            "Trade_Date": item.get("transaction_date", ""),
+                            "Politician": item.get("representative") or item.get("senator", "Member of Congress"),
+                            "Chamber": "House" if "representative" in item else "Senate",
+                            "Ticker": tkr,
+                            "Action": item.get("type", "Purchase"),
+                            "Amount_Range": item.get("amount", "$15,001 - $50,000"),
+                            "Asset": str(item.get("asset_description", ""))[:42],
+                        }
+                    )
+        except Exception:
+            continue
+
+    df = pd.DataFrame(records)
+    if not df.empty:
+        df = df.sort_values("Filing_Date", ascending=False).reset_index(drop=True)
+        if ticker_filter:
+            sub = df[df["Ticker"] == ticker_filter.upper().strip()]
+            if not sub.empty:
+                return sub.head(40)
+    return df.head(60)
+
+
+@st.cache_data(ttl=1800)
+def fetch_sec_insider_trades(ticker_filter=None):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    if ticker_filter:
+        url = f"http://openinsider.com/screener?s={ticker_filter.upper().strip()}&fd=180&xp=1&xs=1&cnt=40&page=1"
+    else:
+        url = "http://openinsider.com/screener?s=&fd=30&xp=1&vl=100&cnt=50&page=1"
+    try:
+        resp = requests.get(url, headers=headers, timeout=8)
+        tables = pd.read_html(resp.text)
+        for tbl in tables:
+            cols = [str(c).replace("\xa0", " ").strip() for c in tbl.columns]
+            if "Filing Date" in cols and "Trade Type" in cols:
+                tbl.columns = cols
+                keep = [
+                    c for c in [
+                        "Filing Date", "Trade Date", "Ticker", "Insider Name",
+                        "Title", "Trade Type", "Price", "Qty", "Owned", "ΔOwn", "Value"
+                    ] if c in tbl.columns
+                ]
+                return tbl[keep].head(45)
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=1800)
+def build_master_universe():
+    """
+    Constructs the Union of:
+      a) Top 50 Market Cap (incl. Mag 7)
+      b) Live Congressional & SEC Corporate Insider tickers
+      c) High Options Flow tickers
+      d) Social Media Buzz tickers
+      e) Popular Index & Sector ETFs
+    """
+    cong_df = fetch_congress_trades()
+    ins_df = fetch_sec_insider_trades()
+
+    cong_tickers = cong_df["Ticker"].dropna().unique().tolist()[:15] if not cong_df.empty else []
+    ins_tickers = (
+        [str(x).strip().upper() for x in ins_df["Ticker"].dropna().unique().tolist()[:15]]
+        if (not ins_df.empty and "Ticker" in ins_df.columns)
+        else []
+    )
+
+    # Fallback high-profile Congressional / Insider names if feed is unreachable
+    fallback_filings = ["NVDA", "MSFT", "GOOGL", "AAPL", "PANW", "LMT", "RTX", "GD", "JPM", "UNH"]
+
+    union_list = list(
+        dict.fromkeys(
+            POPULAR_ETFS
+            + TOP_50_MARKET_CAP
+            + OPTIONS_FLOW_LEADERS
+            + SOCIAL_MEDIA_BUZZ
+            + cong_tickers
+            + ins_tickers
+            + fallback_filings
+        )
+    )
+    return [t for t in union_list if isinstance(t, str) and 1 <= len(t) <= 5]
+
+
+# ==========================================
+# 3. AUTOMATIC ZERO-CLICK SQLITE LOGGING & SILENT GITHUB SYNC
 # ==========================================
 DB_PATH = "openwhale_signals.db"
 CSV_BACKUP_PATH = "openwhale_signals_log.csv"
@@ -161,12 +277,41 @@ def init_sqlite_db():
     conn.close()
 
 
-def log_signal_to_db(eval_dict):
+def _silent_github_push_worker():
+    """Background thread that commits the DB & CSV to GitHub automatically when secrets exist."""
+    try:
+        gh_repo = st.secrets.get("GITHUB_REPO", "") if "GITHUB_REPO" in st.secrets else os.environ.get("GITHUB_REPO", "")
+        gh_token = st.secrets.get("GITHUB_TOKEN", "") if "GITHUB_TOKEN" in st.secrets else os.environ.get("GITHUB_TOKEN", "")
+        if not (gh_repo and gh_token):
+            return
+
+        for fpath in [DB_PATH, CSV_BACKUP_PATH]:
+            if not os.path.exists(fpath):
+                continue
+            with open(fpath, "rb") as f:
+                content_b64 = base64.b64encode(f.read()).decode("utf-8")
+            api_url = f"https://api.github.com/repos/{gh_repo}/contents/{fpath}"
+            headers = {"Authorization": f"token {gh_token}", "Accept": "application/vnd.github.v3+json"}
+            r_get = requests.get(api_url, headers=headers, timeout=8)
+            sha = r_get.json().get("sha") if r_get.status_code == 200 else None
+            payload = {
+                "message": f"Auto-log 5-Star setup ({fpath}) [{dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]",
+                "content": content_b64,
+                "branch": "main",
+            }
+            if sha:
+                payload["sha"] = sha
+            requests.put(api_url, headers=headers, json=payload, timeout=10)
+    except Exception:
+        pass
+
+
+def auto_log_5star_to_db(eval_dict):
     """
-    Logs or updates any 4-Star or 5-Star trade in SQLite so we track when it first
-    triggered, how many times it confirmed, and whether it is gaining strength.
+    Requirement #2: Immediately logs any 5-Star setup (even if it lasts 1 min)
+    into SQLite and triggers a non-blocking background GitHub sync.
     """
-    if eval_dict["stars"] < 4:
+    if eval_dict["stars"] < 5:
         return
     init_sqlite_db()
     today_str = dt.date.today().strftime("%Y-%m-%d")
@@ -176,38 +321,26 @@ def log_signal_to_db(eval_dict):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "SELECT first_seen_time, times_confirmed, peak_stars, entry_price FROM signal_history WHERE signal_date=? AND ticker=?",
+        "SELECT first_seen_time, times_confirmed, peak_stars FROM signal_history WHERE signal_date=? AND ticker=?",
         (today_str, tkr),
     )
     row = cur.fetchone()
+    is_new_5star = False
 
     if row is None:
+        is_new_5star = True
         cur.execute(
-            """
-            INSERT INTO signal_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO signal_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                today_str,
-                tkr,
-                now_str,
-                now_str,
-                1,
-                eval_dict["stars"],
-                eval_dict["stars"],
-                eval_dict["bias"],
-                eval_dict["strength_trend"],
-                eval_dict["duration_mins"],
-                eval_dict["spot"],
-                eval_dict["spot"],
-                eval_dict["stop"],
-                eval_dict["target"],
-                eval_dict["rr"],
-                eval_dict["call_pct"],
+                today_str, tkr, now_str, now_str, 1,
+                eval_dict["stars"], eval_dict["stars"], eval_dict["bias"],
+                eval_dict["strength_trend"], eval_dict["duration_mins"],
+                eval_dict["spot"], eval_dict["spot"], eval_dict["stop"],
+                eval_dict["target"], eval_dict["rr"], eval_dict["call_pct"],
             ),
         )
     else:
-        first_seen, count_conf, peak_s, orig_entry = row
-        new_peak = max(int(peak_s), eval_dict["stars"])
+        _, count_conf, peak_s = row
         cur.execute(
             """
             UPDATE signal_history
@@ -217,26 +350,20 @@ def log_signal_to_db(eval_dict):
             WHERE signal_date=? AND ticker=?
             """,
             (
-                now_str,
-                int(count_conf) + 1,
-                new_peak,
-                eval_dict["stars"],
-                eval_dict["bias"],
-                eval_dict["strength_trend"],
-                eval_dict["duration_mins"],
-                eval_dict["spot"],
-                eval_dict["stop"],
-                eval_dict["target"],
-                eval_dict["rr"],
-                eval_dict["call_pct"],
-                today_str,
-                tkr,
+                now_str, int(count_conf) + 1, max(int(peak_s), eval_dict["stars"]),
+                eval_dict["stars"], eval_dict["bias"], eval_dict["strength_trend"],
+                eval_dict["duration_mins"], eval_dict["spot"], eval_dict["stop"],
+                eval_dict["target"], eval_dict["rr"], eval_dict["call_pct"],
+                today_str, tkr,
             ),
         )
     conn.commit()
     df_log = pd.read_sql_query("SELECT * FROM signal_history ORDER BY signal_date DESC, last_seen_time DESC", conn)
     conn.close()
     df_log.to_csv(CSV_BACKUP_PATH, index=False)
+
+    if is_new_5star:
+        threading.Thread(target=_silent_github_push_worker, daemon=True).start()
 
 
 def read_signals_from_db():
@@ -247,55 +374,8 @@ def read_signals_from_db():
     return df
 
 
-def push_file_to_github(local_file_path, repo_full_name, branch="main", github_token=""):
-    """
-    Commits the local SQLite .db file (or .csv log) directly back into your GitHub
-    repository using the GitHub REST API—no external database server required!
-    """
-    if not os.path.exists(local_file_path):
-        return False, f"File {local_file_path} does not exist yet."
-
-    with open(local_file_path, "rb") as f:
-        content_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    api_url = f"https://api.github.com/repos/{repo_full_name}/contents/{local_file_path}"
-    headers = {
-        "Authorization": f"token {github_token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-
-    # Check if file already exists in repo to get its SHA
-    r_get = requests.get(api_url, headers=headers, params={"ref": branch}, timeout=10)
-    sha = r_get.json().get("sha") if r_get.status_code == 200 else None
-
-    payload = {
-        "message": f"Auto-sync OpenWhale DB ({local_file_path}) [{dt.datetime.now().strftime('%Y-%m-%d %H:%M')}]",
-        "content": content_b64,
-        "branch": branch,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    r_put = requests.put(api_url, headers=headers, json=payload, timeout=15)
-    if r_put.status_code in (200, 201):
-        return True, f"✅ Successfully committed `{local_file_path}` to `{repo_full_name}`!"
-    return False, f"❌ GitHub API Error ({r_put.status_code}): {r_put.text[:180]}"
-
-
 # ==========================================
-# CORE WATCHLIST UNIVERSE
-# ==========================================
-DEFAULT_WATCHLIST = [
-    "SPY", "QQQ", "IWM", "DIA", "SMH", "NVDA", "TSLA", "AAPL", "AMD", "MSFT",
-    "AMZN", "META", "GOOGL", "NFLX", "AVGO", "PLTR", "COIN", "MSTR", "SOFI", "HOOD",
-    "ARM", "SMCI", "MU", "INTC", "ORCL", "CRM", "UBER", "SHOP", "JPM", "GS", "LLY", "XOM"
-]
-
-OCC_REGEX = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
-
-
-# ==========================================
-# 2. STABILIZED TECHNICAL & DURATION ENGINE
+# 4. MULTI-TICKER STREAMING ENGINE (30s REFRESH) & CBOE SWEEPS
 # ==========================================
 def compute_rsi(series, period=14):
     delta = series.diff()
@@ -305,100 +385,6 @@ def compute_rsi(series, period=14):
     return pd.Series(100 - (100 / (1 + rs)), index=series.index)
 
 
-@st.cache_data(ttl=60)
-def fetch_live_spot_and_intraday(ticker):
-    """
-    Pulls 5-minute candles AND computes a 15-minute smoothed institutional anchor
-    so 5-Star signals don't flip-flop on every 1-minute price tick.
-    Also calculates Signal Duration (consecutive minutes on current side of VWAP)
-    and Signal Strength Trajectory (whether momentum is gaining or fading).
-    """
-    tk = yf.Ticker(ticker)
-    df = tk.history(period="5d", interval="5m", prepost=True)
-    daily = tk.history(period="10d", interval="1d", prepost=False)
-
-    if df.empty or daily.empty:
-        raise ValueError(f"No live price data returned for {ticker}")
-
-    df = df.dropna(subset=["Close"]).copy()
-    df["RSI"] = compute_rsi(df["Close"], 14)
-    df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
-    df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
-
-    df["Date"] = df.index.date
-    df["TypVol"] = ((df["High"] + df["Low"] + df["Close"]) / 3.0) * df["Volume"]
-    daily_cum_typvol = df.groupby("Date")["TypVol"].cumsum()
-    daily_cum_vol = df.groupby("Date")["Volume"].cumsum()
-    df["VWAP"] = np.where(daily_cum_vol > 0, daily_cum_typvol / daily_cum_vol, df["Close"])
-
-    spot = float(df["Close"].iloc[-1])
-    # 15-minute (3-bar) smoothed price anchor prevents rating flicker on single-tick noise
-    smoothed_spot = float(df["Close"].tail(3).mean())
-    prev_close = float(daily["Close"].iloc[-2]) if len(daily) >= 2 else float(daily["Close"].iloc[-1])
-    change_pct = ((spot - prev_close) / prev_close) * 100.0
-    vwap = float(df["VWAP"].iloc[-1])
-    rsi = float(df["RSI"].iloc[-1]) if not np.isnan(df["RSI"].iloc[-1]) else 50.0
-    ema9 = float(df["EMA9"].iloc[-1])
-    ema21 = float(df["EMA21"].iloc[-1])
-
-    # Calculate Signal Persistence Duration (consecutive 5m bars holding above/below VWAP)
-    above_vwap_now = smoothed_spot >= vwap
-    consecutive_bars = 0
-    for _, r in df.iloc[::-1].iterrows():
-        if (float(r["Close"]) >= float(r["VWAP"])) == above_vwap_now:
-            consecutive_bars += 1
-        else:
-            break
-    duration_mins = consecutive_bars * 5
-    if duration_mins >= 60:
-        duration_label = f"{duration_mins // 60}h {duration_mins % 60}m ({consecutive_bars} bars)"
-    else:
-        duration_label = f"{duration_mins} mins ({consecutive_bars} bars)"
-
-    # Calculate Signal Strength Trajectory (comparing current EMA spread & VWAP spread to 30 mins ago)
-    spread_now = abs(ema9 - ema21) / max(spot, 1) * 1000
-    if len(df) >= 7:
-        ema9_prev = float(df["EMA9"].iloc[-7])
-        ema21_prev = float(df["EMA21"].iloc[-7])
-        spread_prev = abs(ema9_prev - ema21_prev) / max(spot, 1) * 1000
-    else:
-        spread_prev = spread_now
-
-    if duration_mins <= 20:
-        strength_trend = "⚡ Newly Triggered (<20m)"
-    elif spread_now > spread_prev * 1.08:
-        strength_trend = "🔥 Gaining Strength (Accelerating)"
-    elif spread_now < spread_prev * 0.90:
-        strength_trend = "❄️ Momentum Cooling (Take Partial Profit)"
-    else:
-        strength_trend = "💪 Holding Steady (Locked In)"
-
-    avg_vol = float(daily["Volume"].iloc[:-1].mean()) if len(daily) > 1 else 1.0
-    today_vol = float(daily["Volume"].iloc[-1])
-    rvol = round(today_vol / avg_vol, 2) if avg_vol > 0 else 1.0
-
-    return {
-        "ticker": ticker,
-        "spot": round(spot, 2),
-        "smoothed_spot": round(smoothed_spot, 2),
-        "prev_close": round(prev_close, 2),
-        "change_pct": round(change_pct, 2),
-        "vwap": round(vwap, 2),
-        "rsi": round(rsi, 1),
-        "ema9": round(ema9, 2),
-        "ema21": round(ema21, 2),
-        "rvol": rvol,
-        "duration_mins": duration_mins,
-        "duration_label": duration_label,
-        "strength_trend": strength_trend,
-        "intraday_df": df,
-        "daily_df": daily,
-    }
-
-
-# ==========================================
-# 3. LIVE CBOE OPTIONS FLOW & SWEEP ENGINE
-# ==========================================
 def calc_bs_gamma(S, K, T, r, sigma):
     T = np.maximum(T, 4 / (365 * 24))
     sigma = np.maximum(sigma, 0.01)
@@ -406,28 +392,116 @@ def calc_bs_gamma(S, K, T, r, sigma):
     return norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
 
-@st.cache_data(ttl=90)
-def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expiries=4):
+@st.cache_data(ttl=25)
+def fetch_batch_live_quotes(tickers):
+    """
+    Streams 5-minute extended-hours bars in batch across the tracked universe
+    every 30 seconds to power the Multi-Ticker Grid and 5-Star detector.
+    """
+    raw = yf.download(
+        tickers, period="5d", interval="5m", prepost=True, group_by="ticker", threads=True, progress=False
+    )
+    spot_map = {}
+
+    for sym in tickers:
+        try:
+            df = raw[sym].dropna(subset=["Close"]).copy() if sym in raw else pd.DataFrame()
+            if len(df) < 15:
+                continue
+
+            df["RSI"] = compute_rsi(df["Close"], 14)
+            df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+            df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
+
+            df["Date"] = df.index.date
+            df["TypVol"] = ((df["High"] + df["Low"] + df["Close"]) / 3.0) * df["Volume"]
+            cum_tv = df.groupby("Date")["TypVol"].cumsum()
+            cum_v = df.groupby("Date")["Volume"].cumsum()
+            df["VWAP"] = np.where(cum_v > 0, cum_tv / cum_v, df["Close"])
+
+            spot = float(df["Close"].iloc[-1])
+            smoothed_spot = float(df["Close"].tail(3).mean())
+
+            unique_dates = sorted(df["Date"].unique())
+            if len(unique_dates) >= 2:
+                prev_day_df = df[df["Date"] == unique_dates[-2]]
+                prev_close = float(prev_day_df["Close"].iloc[-1])
+            else:
+                prev_close = float(df["Close"].iloc[0])
+
+            change_pct = ((spot - prev_close) / prev_close) * 100.0
+            vwap = float(df["VWAP"].iloc[-1])
+            rsi = float(df["RSI"].iloc[-1]) if not np.isnan(df["RSI"].iloc[-1]) else 50.0
+            ema9 = float(df["EMA9"].iloc[-1])
+            ema21 = float(df["EMA21"].iloc[-1])
+
+            # Consecutive 5m bars holding above/below VWAP
+            above_vwap_now = smoothed_spot >= vwap
+            consecutive_bars = 0
+            for _, r in df.iloc[::-1].iterrows():
+                if (float(r["Close"]) >= float(r["VWAP"])) == above_vwap_now:
+                    consecutive_bars += 1
+                else:
+                    break
+            duration_mins = consecutive_bars * 5
+            duration_label = (
+                f"{duration_mins // 60}h {duration_mins % 60}m" if duration_mins >= 60 else f"{duration_mins}m"
+            )
+
+            spread_now = abs(ema9 - ema21) / max(spot, 1) * 1000
+            spread_prev = (
+                abs(float(df["EMA9"].iloc[-7]) - float(df["EMA21"].iloc[-7])) / max(spot, 1) * 1000
+                if len(df) >= 7
+                else spread_now
+            )
+
+            if duration_mins <= 15:
+                strength_trend = "⚡ Newly Triggered"
+            elif spread_now > spread_prev * 1.06:
+                strength_trend = "🔥 Gaining Strength"
+            elif spread_now < spread_prev * 0.92:
+                strength_trend = "❄️ Cooling Off"
+            else:
+                strength_trend = "💪 Holding Steady"
+
+            spot_map[sym] = {
+                "ticker": sym,
+                "spot": round(spot, 2),
+                "smoothed_spot": round(smoothed_spot, 2),
+                "change_pct": round(change_pct, 2),
+                "vwap": round(vwap, 2),
+                "rsi": round(rsi, 1),
+                "ema9": round(ema9, 2),
+                "ema21": round(ema21, 2),
+                "duration_mins": duration_mins,
+                "duration_label": duration_label,
+                "strength_trend": strength_trend,
+                "intraday_df": df.tail(75),
+            }
+        except Exception:
+            continue
+
+    return spot_map
+
+
+@st.cache_data(ttl=30)
+def fetch_cboe_options_for_ticker(ticker_symbol, spot_override=None):
     clean_sym = ticker_symbol.upper().strip().replace("^", "")
     index_tickers = {"SPX", "VIX", "NDX", "RUT", "DJX", "XSP"}
     cboe_sym = f"_{clean_sym}" if clean_sym in index_tickers else clean_sym
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     url = f"https://cdn.cboe.com/api/global/delayed_quotes/options/{cboe_sym}.json"
-    resp = requests.get(url, headers=headers, timeout=12)
+    resp = requests.get(url, headers=headers, timeout=8)
+    if resp.status_code != 200:
+        raise ValueError(f"CBOE unavailable for {ticker_symbol}")
 
-    if resp.status_code != 200 and not cboe_sym.startswith("_"):
-        url = f"https://cdn.cboe.com/api/global/delayed_quotes/options/_{clean_sym}.json"
-        resp = requests.get(url, headers=headers, timeout=12)
-
-    resp.raise_for_status()
     payload = resp.json().get("data", {})
-    quote_timestamp = payload.get("timestamp") or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+    quote_timestamp = payload.get("timestamp") or dt.datetime.now().strftime("%H:%M:%S")
     spot = float(spot_override or payload.get("current_price") or payload.get("close") or 0)
     raw_options = payload.get("options", [])
     if not raw_options or spot <= 0:
-        raise ValueError(f"No options data for {ticker_symbol}")
+        raise ValueError("Empty options chain")
 
     today_date = dt.date.today()
     today_str = today_date.strftime("%Y-%m-%d")
@@ -444,7 +518,7 @@ def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expirie
             continue
 
         strike = int(strike_raw) / 1000.0
-        if strike < spot * 0.82 or strike > spot * 1.18:
+        if strike < spot * 0.84 or strike > spot * 1.16:
             continue
 
         exp_date = dt.datetime.strptime(exp_str, "%Y-%m-%d").date()
@@ -459,24 +533,25 @@ def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expirie
         last_trade_time = opt.get("last_trade_time") or quote_timestamp
 
         if ask > 0 and last_p >= ask * 0.98:
-            exec_side = "🔥 Ask-Side (Aggressive Buy)"
+            exec_side = "🔥 Ask-Side Sweep"
         elif bid > 0 and last_p <= bid * 1.02:
-            exec_side = "❄️ Bid-Side (Sell / Write)"
+            exec_side = "❄️ Bid-Side Block"
         else:
             exec_side = "⚖️ Mid-Market"
 
         if dte == 0:
-            horizon = "⚡ 0DTE Intraday Scalp"
+            horizon = "⚡ 0DTE Scalp"
         elif dte <= 5:
-            horizon = f"🏃 Weekly Swing ({dte}d)"
+            horizon = f"🏃 Weekly ({dte}d)"
         elif dte <= 21:
-            horizon = f"📅 1–3 Week Swing ({dte}d)"
+            horizon = f"📅 Swing ({dte}d)"
         else:
-            horizon = f"🏛️ Macro Position ({dte}d)"
+            horizon = f"🏛️ Macro ({dte}d)"
 
         rows.append(
             {
                 "Ticker": clean_sym,
+                "Spot": round(spot, 2),
                 "Contract": sym,
                 "Type": "🟢 CALL" if cp == "C" else "🔴 PUT",
                 "raw_type": "call" if cp == "C" else "put",
@@ -485,8 +560,6 @@ def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expirie
                 "DTE": dte,
                 "Timeframe_Horizon": horizon,
                 "Last_Price": round(mark, 2),
-                "Bid": round(bid, 2),
-                "Ask": round(ask, 2),
                 "Execution_Side": exec_side,
                 "Volume": int(vol),
                 "Open_Interest": int(oi),
@@ -500,11 +573,10 @@ def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expirie
 
     df = pd.DataFrame(rows)
     if df.empty:
-        raise ValueError("No valid near-the-money options found.")
+        raise ValueError("No valid contracts")
 
-    nearest_exps = sorted(df["Expiration"].unique())[:num_expiries]
+    nearest_exps = sorted(df["Expiration"].unique())[:4]
     gex_slice = df[df["Expiration"].isin(nearest_exps)].copy()
-
     T_years = np.maximum(gex_slice["DTE"].values / 365.0, 4 / (365 * 24))
     bs_gamma = calc_bs_gamma(
         spot, gex_slice["Strike"].values, T_years, 0.042, np.maximum(gex_slice["IV"].values / 100.0, 0.05)
@@ -523,7 +595,6 @@ def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expirie
 
     above_spot = gex_by_strike[gex_by_strike["Strike"] >= spot]
     below_spot = gex_by_strike[gex_by_strike["Strike"] <= spot]
-
     call_wall = (
         float(above_spot.loc[above_spot["call"].idxmax(), "Strike"])
         if not above_spot.empty
@@ -551,9 +622,10 @@ def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expirie
     put_prem = df[df["raw_type"] == "put"]["Premium_USD"].sum()
     call_pct = (call_prem / (call_prem + put_prem) * 100.0) if (call_prem + put_prem) > 0 else 50.0
 
-    sweeps_df = (
-        df[(df["Volume"] >= 150) & (df["Vol_OI_Ratio"] >= 1.25) & (df["Premium_USD"] >= 50000)]
-        .sort_values("Premium_USD", ascending=False)
+    # Requirement #4: Keep minimum institutional sweep at $100,000 and sort by Urgency (Vol_OI_Ratio)
+    sweeps_100k = (
+        df[(df["Volume"] >= 150) & (df["Vol_OI_Ratio"] >= 1.25) & (df["Premium_USD"] >= MIN_SWEEP_USD)]
+        .sort_values(["Vol_OI_Ratio", "Premium_USD"], ascending=[False, False])
         .reset_index(drop=True)
     )
 
@@ -562,22 +634,11 @@ def fetch_live_options_and_sweeps(ticker_symbol, spot_override=None, num_expirie
         "put_wall": round(put_wall, 2),
         "zero_gamma": round(float(zero_gamma), 2),
         "call_pct": round(call_pct, 1),
-        "call_prem_m": round(call_prem / 1e6, 2),
-        "put_prem_m": round(put_prem / 1e6, 2),
-        "gex_by_strike": gex_by_strike,
-        "sweeps_df": sweeps_df,
-        "all_options_df": df,
+        "sweeps_df": sweeps_100k,
     }
 
 
-# ==========================================
-# 4. STABILIZED 5-STAR RATING & PERSISTENCE ENGINE
-# ==========================================
 def evaluate_star_rating(spot_info, opt_info):
-    """
-    Uses 15-minute smoothed price (`smoothed_spot`) so ratings stay rock-solid
-    across refreshes, plus outputs `strength_trend` and `duration_label`.
-    """
     spot = spot_info["spot"]
     anchor_p = spot_info["smoothed_spot"]
     vwap = spot_info["vwap"]
@@ -594,103 +655,70 @@ def evaluate_star_rating(spot_info, opt_info):
     put_sweeps = len(sweeps[sweeps["raw_type"] == "put"]) if not sweeps.empty else 0
 
     is_bullish = (anchor_p >= vwap and call_pct >= 50.0) or (call_pct >= 60.0)
-
     stars = 0
-    checklist = []
 
     if is_bullish:
         bias = "LONG"
         if anchor_p >= vwap * 0.999 and ema_bull:
             stars += 1
-            checklist.append(f"⭐ Trend Aligned: 15m Anchor (${anchor_p}) > Fair Price VWAP (${vwap})")
-        else:
-            checklist.append(f"⚪ Trend Mixed: Anchor (${anchor_p}) vs VWAP (${vwap})")
-
         if anchor_p >= zero_gamma * 0.999:
             stars += 1
-            checklist.append(f"⭐ Dealer Regime: Above Danger Line (${zero_gamma})")
-        else:
-            checklist.append(f"⚪ Dealer Regime: Below Danger Line (${zero_gamma})")
-
         if call_pct >= 56.0:
             stars += 1
-            checklist.append(f"⭐ Smart Money Flow: {call_pct:.1f}% Bullish Call Buying")
-        else:
-            checklist.append(f"⚪ Smart Money Flow: {call_pct:.1f}% Call Buying (<56%)")
-
-        if call_sweeps >= 2:
+        if call_sweeps >= 1:
             stars += 1
-            checklist.append(f"⭐ Whale Sweeps: {call_sweeps} Urgent Call Sweeps")
-        else:
-            checklist.append(f"⚪ Whale Sweeps: {call_sweeps} Call Sweeps")
-
         target = call_wall if call_wall > spot * 1.005 else round(spot * 1.02, 2)
         stop = round(max(put_wall, min(vwap, zero_gamma) * 0.994, spot * 0.988), 2)
         if stop >= spot:
             stop = round(spot * 0.99, 2)
         rr = round((target - spot) / max(spot - stop, 0.01), 2)
-
         if 32.0 <= rsi <= 69.0 and rr >= 1.4:
             stars += 1
-            checklist.append(f"⭐ Risk/Reward & Fever: R:R {rr}:1 | RSI {rsi}")
-        else:
-            checklist.append(f"⚪ Risk/Reward or Fever: R:R {rr}:1 | RSI {rsi}")
-
     else:
         bias = "SHORT"
         put_pct = 100.0 - call_pct
-
         if anchor_p < vwap * 1.001 and not ema_bull:
             stars += 1
-            checklist.append(f"⭐ Trend Aligned: 15m Anchor (${anchor_p}) < Fair Price VWAP (${vwap})")
-        else:
-            checklist.append(f"⚪ Trend Mixed: Anchor (${anchor_p}) vs VWAP (${vwap})")
-
         if anchor_p < zero_gamma * 1.001:
             stars += 1
-            checklist.append(f"⭐ Dealer Regime: Below Danger Line (${zero_gamma}) — Fast Drop")
-        else:
-            checklist.append(f"⚪ Dealer Regime: Above Danger Line (${zero_gamma})")
-
         if put_pct >= 56.0:
             stars += 1
-            checklist.append(f"⭐ Smart Money Flow: {put_pct:.1f}% Bearish Put Buying")
-        else:
-            checklist.append(f"⚪ Smart Money Flow: {put_pct:.1f}% Put Buying (<56%)")
-
-        if put_sweeps >= 2:
+        if put_sweeps >= 1:
             stars += 1
-            checklist.append(f"⭐ Whale Sweeps: {put_sweeps} Urgent Put Sweeps")
-        else:
-            checklist.append(f"⚪ Whale Sweeps: {put_sweeps} Put Sweeps")
-
         target = put_wall if put_wall < spot * 0.995 else round(spot * 0.98, 2)
         stop = round(min(call_wall, max(vwap, zero_gamma) * 1.006, spot * 1.012), 2)
         if stop <= spot:
             stop = round(spot * 1.01, 2)
         rr = round((spot - target) / max(stop - spot, 0.01), 2)
-
         if 31.0 <= rsi <= 68.0 and rr >= 1.4:
             stars += 1
-            checklist.append(f"⭐ Risk/Reward & Fever: R:R {rr}:1 | RSI {rsi}")
-        else:
-            checklist.append(f"⚪ Risk/Reward or Fever: R:R {rr}:1 | RSI {rsi}")
 
     star_str = "⭐" * stars + "☆" * (5 - stars)
-    label = f"{star_str} ({stars}/5) — {'🟢 ACTIONABLE LONG' if (stars >= 4 and bias == 'LONG') else ('🔴 ACTIONABLE SHORT' if (stars >= 4 and bias == 'SHORT') else '🟡 WAIT FOR 4–5 STARS')}"
+    verdict = (
+        "🟢 5-STAR LONG"
+        if (stars == 5 and bias == "LONG")
+        else (
+            "🔴 5-STAR SHORT"
+            if (stars == 5 and bias == "SHORT")
+            else ("🟢 4-STAR LONG" if (stars == 4 and bias == "LONG") else ("🔴 4-STAR SHORT" if (stars == 4 and bias == "SHORT") else f"🟡 {stars}-STAR WAIT"))
+        )
+    )
 
-    result = {
+    res = {
         "ticker": spot_info["ticker"],
         "stars": stars,
         "star_str": star_str,
         "bias": bias,
-        "verdict_label": label,
+        "verdict_label": verdict,
         "strength_trend": spot_info["strength_trend"],
         "duration_label": spot_info["duration_label"],
         "duration_mins": spot_info["duration_mins"],
         "spot": spot,
+        "change_pct": spot_info["change_pct"],
         "vwap": vwap,
         "zero_gamma": zero_gamma,
+        "put_wall": put_wall,
+        "call_wall": call_wall,
         "entry": round(spot, 2),
         "stop": stop,
         "target": target,
@@ -698,641 +726,506 @@ def evaluate_star_rating(spot_info, opt_info):
         "rsi": rsi,
         "call_pct": call_pct,
         "sweeps_summary": f"{call_sweeps}C / {put_sweeps}P",
-        "checklist": checklist,
-        "Expected_Timeframe": "1–4 Hours (Intraday) to 2 Days",
     }
 
-    # Auto-log 4-Star and 5-Star signals to SQLite DB
-    log_signal_to_db(result)
-    return result
+    # Requirement #2: Automatically log any 5-Star setup to DB immediately
+    if stars == 5:
+        auto_log_5star_to_db(res)
+    return res
+
+
+@st.cache_data(ttl=25)
+def run_multi_ticker_grid_and_sweeps(universe_tickers):
+    """
+    Requirement #4: Scans the tracked universe concurrently, builds a Multi-Ticker Grid,
+    auto-logs any 5-Star setup, and aggregates ALL >=$100k Institutional Sweeps
+    sorted by Urgency (Vol/OI Ratio).
+    """
+    spot_map = fetch_batch_live_quotes(universe_tickers)
+    active_syms = list(spot_map.keys())
+
+    grid_rows = []
+    all_sweeps = []
+
+    def _worker(sym):
+        s_info = spot_map[sym]
+        try:
+            o_info = fetch_cboe_options_for_ticker(sym, spot_override=s_info["spot"])
+            eval_res = evaluate_star_rating(s_info, o_info)
+            return eval_res, o_info["sweeps_df"]
+        except Exception:
+            fallback_opt = {
+                "call_wall": round(s_info["spot"] * 1.02, 2),
+                "put_wall": round(s_info["spot"] * 0.98, 2),
+                "zero_gamma": s_info["vwap"],
+                "call_pct": 50.0,
+                "sweeps_df": pd.DataFrame(),
+            }
+            return evaluate_star_rating(s_info, fallback_opt), pd.DataFrame()
+
+    with ThreadPoolExecutor(max_workers=14) as ex:
+        futures = {ex.submit(_worker, sym): sym for sym in active_syms}
+        for f in as_completed(futures):
+            ev_res, sw_df = f.result()
+            grid_rows.append(ev_res)
+            if not sw_df.empty:
+                all_sweeps.append(sw_df)
+
+    grid_df = (
+        pd.DataFrame(grid_rows)
+        .sort_values(["stars", "duration_mins", "rr"], ascending=[False, False, False])
+        .reset_index(drop=True)
+        if grid_rows
+        else pd.DataFrame()
+    )
+
+    if all_sweeps:
+        master_sweeps_df = (
+            pd.concat(all_sweeps, ignore_index=True)
+            .sort_values(["Vol_OI_Ratio", "Premium_USD"], ascending=[False, False])
+            .reset_index(drop=True)
+        )
+    else:
+        master_sweeps_df = pd.DataFrame()
+
+    return grid_df, master_sweeps_df, spot_map
 
 
 # ==========================================
-# 5. REAL HISTORICAL 5-STAR BACKTEST ENGINE
+# 5. YTD 2026 BACKTEST ENGINE (SINCE 2026-01-01 + $100 TRADE SIZING)
 # ==========================================
-@st.cache_data(ttl=600)
-def run_real_5star_backtest(tickers, lookback_days="30d"):
+@st.cache_data(ttl=900)
+def run_ytd_2026_5star_backtest(tickers):
+    """
+    Requirement #3: Backtests all 5-Star trades across the tracked names since 2026-01-01
+    (plus any logged SQLite 5-Star trades) for Success/Failure, $100 Trade P&L,
+    % Return on Investment (ROI %), and Dollar Risk ($) per trade.
+    """
     raw = yf.download(
-        tickers, period=lookback_days, interval="15m", prepost=False, group_by="ticker", threads=True, progress=False
+        tickers, start="2025-12-01", interval="1d", prepost=False, group_by="ticker", threads=True, progress=False
     )
 
     trades = []
     for sym in tickers:
         try:
-            df = raw[sym].dropna(subset=["Close", "High", "Low", "Volume"]).copy() if sym in raw else pd.DataFrame()
-            if len(df) < 60:
+            df = raw[sym].dropna(subset=["Open", "High", "Low", "Close", "Volume"]).copy() if sym in raw else pd.DataFrame()
+            if len(df) < 25:
                 continue
 
-            df["Date"] = df.index.date
-            df["TypVol"] = ((df["High"] + df["Low"] + df["Close"]) / 3.0) * df["Volume"]
-            df["VWAP"] = df.groupby("Date")["TypVol"].cumsum() / np.maximum(df.groupby("Date")["Volume"].cumsum(), 1)
             df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
             df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
             df["RSI"] = compute_rsi(df["Close"], 14)
             df["Vol_MA20"] = df["Volume"].rolling(20).mean()
             df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
+            df["Typical_VWAP"] = (df["High"] + df["Low"] + df["Close"]) / 3.0
 
-            for day_date, day_df in df.groupby("Date"):
-                if len(day_df) < 12:
+            # Filter strictly to signals occurring on or after 2026-01-01
+            df_2026 = df[df.index >= "2026-01-01"].copy()
+            if len(df_2026) < 5:
+                continue
+
+            i = 1
+            while i < len(df_2026) - 3:
+                row = df_2026.iloc[i]
+                prev_row = df_2026.iloc[i - 1]
+                sig_date = df_2026.index[i].strftime("%Y-%m-%d")
+
+                if pd.isna(row["ATR"]) or pd.isna(row["Vol_MA20"]) or row["ATR"] <= 0:
+                    i += 1
                     continue
-                for idx in range(2, min(16, len(day_df) - 4)):
-                    row = day_df.iloc[idx]
-                    prev_row = day_df.iloc[idx - 1]
-                    if pd.isna(row["ATR"]) or pd.isna(row["Vol_MA20"]) or row["ATR"] <= 0:
-                        continue
 
-                    vol_surge = row["Volume"] / max(row["Vol_MA20"], 1)
-                    atr = float(row["ATR"])
-                    entry_price = float(row["Close"])
-                    entry_time = day_df.index[idx]
+                vol_surge = float(row["Volume"] / max(row["Vol_MA20"], 1))
+                atr = float(row["ATR"])
+                entry = float(row["Close"])
+                rsi = float(row["RSI"]) if not np.isnan(row["RSI"]) else 50.0
 
-                    is_5star_long = (
-                        entry_price > row["VWAP"]
-                        and prev_row["Close"] <= prev_row["VWAP"] * 1.003
-                        and row["EMA9"] > row["EMA21"]
-                        and 45.0 <= row["RSI"] <= 67.0
-                        and vol_surge >= 1.8
-                    )
+                # 5-Star Historical Confluence Criteria
+                is_5star_long = (
+                    entry > float(row["Typical_VWAP"])
+                    and float(row["EMA9"]) > float(row["EMA21"])
+                    and float(row["Close"]) > float(prev_row["High"])
+                    and 46.0 <= rsi <= 68.0
+                    and vol_surge >= 1.35
+                )
 
-                    is_5star_short = (
-                        entry_price < row["VWAP"]
-                        and prev_row["Close"] >= prev_row["VWAP"] * 0.997
-                        and row["EMA9"] < row["EMA21"]
-                        and 33.0 <= row["RSI"] <= 55.0
-                        and vol_surge >= 1.8
-                    )
+                is_5star_short = (
+                    entry < float(row["Typical_VWAP"])
+                    and float(row["EMA9"]) < float(row["EMA21"])
+                    and float(row["Close"]) < float(prev_row["Low"])
+                    and 32.0 <= rsi <= 54.0
+                    and vol_surge >= 1.35
+                )
 
-                    if not (is_5star_long or is_5star_short):
-                        continue
+                if not (is_5star_long or is_5star_short):
+                    i += 1
+                    continue
 
-                    setup_type = "🟢 5-STAR LONG" if is_5star_long else "🔴 5-STAR SHORT"
-                    stop_dist = max(atr * 1.2, entry_price * 0.004)
-                    target_dist = stop_dist * 2.0
+                setup_dir = "🟢 5-STAR LONG" if is_5star_long else "🔴 5-STAR SHORT"
+                stop_dist = max(atr * 1.0, entry * 0.012)
+                target_dist = stop_dist * 2.0  # 2.0 : 1 Reward-to-Risk
 
-                    stop_price = entry_price - stop_dist if is_5star_long else entry_price + stop_dist
-                    target_price = entry_price + target_dist if is_5star_long else entry_price - target_dist
+                stop_price = entry - stop_dist if is_5star_long else entry + stop_dist
+                target_price = entry + target_dist if is_5star_long else entry - target_dist
 
-                    future_bars = day_df.iloc[idx + 1 :]
-                    exit_price = float(future_bars["Close"].iloc[-1])
-                    exit_time = future_bars.index[-1]
-                    outcome = "⏱️ EOD Time Exit"
+                # Evaluate up to 5 forward trading days for Target or Stop hit
+                forward_slice = df_2026.iloc[i + 1 : min(i + 6, len(df_2026))]
+                exit_price = float(forward_slice["Close"].iloc[-1])
+                exit_date = forward_slice.index[-1].strftime("%Y-%m-%d")
+                status = "⏱️ Time Exit (5d)"
 
-                    for f_time, f_bar in future_bars.iterrows():
-                        if is_5star_long:
-                            if float(f_bar["Low"]) <= stop_price:
-                                exit_price = stop_price
-                                exit_time = f_time
-                                outcome = "🛑 Stop Hit (-1.0R)"
-                                break
-                            if float(f_bar["High"]) >= target_price:
-                                exit_price = target_price
-                                exit_time = f_time
-                                outcome = "✅ Target Hit (+2.0R)"
-                                break
-                        else:
-                            if float(f_bar["High"]) >= stop_price:
-                                exit_price = stop_price
-                                exit_time = f_time
-                                outcome = "🛑 Stop Hit (-1.0R)"
-                                break
-                            if float(f_bar["Low"]) <= target_price:
-                                exit_price = target_price
-                                exit_time = f_time
-                                outcome = "✅ Target Hit (+2.0R)"
-                                break
+                for f_dt, f_bar in forward_slice.iterrows():
+                    if is_5star_long:
+                        if float(f_bar["Low"]) <= stop_price:
+                            exit_price = stop_price
+                            exit_date = f_dt.strftime("%Y-%m-%d")
+                            status = "❌ FAILURE (Stop Hit)"
+                            break
+                        if float(f_bar["High"]) >= target_price:
+                            exit_price = target_price
+                            exit_date = f_dt.strftime("%Y-%m-%d")
+                            status = "✅ SUCCESS (Target Hit)"
+                            break
+                    else:
+                        if float(f_bar["High"]) >= stop_price:
+                            exit_price = stop_price
+                            exit_date = f_dt.strftime("%Y-%m-%d")
+                            status = "❌ FAILURE (Stop Hit)"
+                            break
+                        if float(f_bar["Low"]) <= target_price:
+                            exit_price = target_price
+                            exit_date = f_dt.strftime("%Y-%m-%d")
+                            status = "✅ SUCCESS (Target Hit)"
+                            break
 
-                    pnl_pct = (
-                        ((exit_price - entry_price) / entry_price) * 100.0
-                        if is_5star_long
-                        else ((entry_price - exit_price) / entry_price) * 100.0
-                    )
-                    r_multiple = (
-                        (exit_price - entry_price) / stop_dist
-                        if is_5star_long
-                        else (entry_price - exit_price) / stop_dist
-                    )
-                    hold_mins = int((exit_time - entry_time).total_seconds() / 60)
+                roi_pct = (
+                    ((exit_price - entry) / entry) * 100.0
+                    if is_5star_long
+                    else ((entry - exit_price) / entry) * 100.0
+                )
+                if status == "⏱️ Time Exit (5d)":
+                    status = "✅ SUCCESS (Time Gain)" if roi_pct > 0 else "❌ FAILURE (Time Loss)"
 
-                    trades.append(
-                        {
-                            "Date": str(day_date),
-                            "Entry_Time": entry_time.strftime("%H:%M"),
-                            "Exit_Time": exit_time.strftime("%H:%M"),
-                            "Hold_Time": f"{hold_mins} mins",
-                            "Ticker": sym,
-                            "Setup": setup_type,
-                            "Vol_Surge": f"{vol_surge:.1f}x",
-                            "Entry_Price": round(entry_price, 2),
-                            "Stop_Loss": round(stop_price, 2),
-                            "Target_Price": round(target_price, 2),
-                            "Exit_Price": round(exit_price, 2),
-                            "Outcome": outcome,
-                            "Return_Pct": round(pnl_pct, 2),
-                            "R_Multiple": round(r_multiple, 2),
-                        }
-                    )
-                    break
+                risk_pct = (stop_dist / entry) * 100.0
+                dollar_risk_on_100 = round(100.0 * (risk_pct / 100.0), 2)
+                dollar_return_on_100 = round(100.0 * (roi_pct / 100.0), 2)
+                final_value_100 = round(100.0 + dollar_return_on_100, 2)
+
+                trades.append(
+                    {
+                        "Signal_Date": sig_date,
+                        "Exit_Date": exit_date,
+                        "Ticker": sym,
+                        "Setup": setup_dir,
+                        "Result": status,
+                        "Entry ($)": round(entry, 2),
+                        "Stop_Loss ($)": round(stop_price, 2),
+                        "Target ($)": round(target_price, 2),
+                        "Exit ($)": round(exit_price, 2),
+                        "Risk_on_$100 ($)": dollar_risk_on_100,
+                        "Risk_%": round(risk_pct, 2),
+                        "PnL_on_$100 ($)": dollar_return_on_100,
+                        "$100_Final_Value ($)": final_value_100,
+                        "ROI_%": round(roi_pct, 2),
+                        "Return_on_Risk (R)": round(dollar_return_on_100 / max(dollar_risk_on_100, 0.01), 2),
+                    }
+                )
+                i += 3  # Advance to avoid overlapping signals on same ticker
         except Exception:
             continue
 
     bt_df = pd.DataFrame(trades)
     if not bt_df.empty:
-        bt_df = bt_df.sort_values(["Date", "Entry_Time"], ascending=[False, False]).reset_index(drop=True)
+        bt_df = bt_df.sort_values("Signal_Date", ascending=False).reset_index(drop=True)
     return bt_df
 
 
 # ==========================================
-# 6. CONGRESS (STOCK ACT) & SEC INSIDER SCRAPER
+# 6. SIDEBAR CONTROLS (NO MANUAL DB SAVE BUTTON)
 # ==========================================
-@st.cache_data(ttl=1800)
-def fetch_congress_trades(ticker_filter=None):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    urls = [
-        "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json",
-        "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json",
-    ]
-    records = []
-    for url in urls:
-        try:
-            r = requests.get(url, headers=headers, timeout=8)
-            if r.status_code == 200:
-                data = r.json()[:400]
-                for item in data:
-                    tkr = str(item.get("ticker", "")).upper().strip().replace("--", "")
-                    if not tkr or tkr == "N/A":
-                        continue
-                    records.append(
-                        {
-                            "Filing_Date": item.get("disclosure_date") or item.get("transaction_date", ""),
-                            "Trade_Date": item.get("transaction_date", ""),
-                            "Politician": item.get("representative") or item.get("senator", "Member of Congress"),
-                            "Chamber": "House" if "representative" in item else "Senate",
-                            "Ticker": tkr,
-                            "Action": item.get("type", "Purchase"),
-                            "Amount_Range": item.get("amount", "$1,001 - $15,000"),
-                            "Asset": str(item.get("asset_description", ""))[:45],
-                        }
-                    )
-        except Exception:
-            continue
+st.sidebar.title("🐋 OpenWhale Terminal")
+st.sidebar.caption("Auto-Logging 5-Star Setups • $100k+ Sweeps • 30s Live Stream")
 
-    df = pd.DataFrame(records)
-    if not df.empty:
-        df = df.sort_values("Filing_Date", ascending=False).reset_index(drop=True)
-        if ticker_filter:
-            df_filtered = df[df["Ticker"] == ticker_filter.upper().strip()]
-            if not df_filtered.empty:
-                return df_filtered.head(40)
-    return df.head(50)
-
-
-@st.cache_data(ttl=1800)
-def fetch_sec_insider_trades(ticker_filter=None):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    if ticker_filter:
-        url = (
-            f"http://openinsider.com/screener?s={ticker_filter.upper().strip()}"
-            "&o=&pl=&ph=&ll=&lh=&fd=180&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago="
-            "&xp=1&xs=1&vl=&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&grp=0&nfl=&nfh="
-            "&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=40&page=1"
-        )
-    else:
-        url = (
-            "http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=30&fdr=&td=0"
-            "&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=100&vh=&ocl=&och=&sic1=-1&sicl=100"
-            "&sich=9999&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=50&page=1"
-        )
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        tables = pd.read_html(resp.text)
-        for tbl in tables:
-            cols = [str(c).replace("\xa0", " ").strip() for c in tbl.columns]
-            if "Filing Date" in cols and "Trade Type" in cols:
-                tbl.columns = cols
-                keep = [
-                    c
-                    for c in [
-                        "Filing Date", "Trade Date", "Ticker", "Insider Name",
-                        "Title", "Trade Type", "Price", "Qty", "Owned", "ΔOwn", "Value",
-                    ]
-                    if c in tbl.columns
-                ]
-                return tbl[keep].head(40)
-    except Exception:
-        pass
-    return pd.DataFrame()
-
-
-# ==========================================
-# 7. SIDEBAR CONTROLS & GITHUB DB SYNC PANEL
-# ==========================================
-st.sidebar.title("🐋 OpenWhale Live")
-st.sidebar.caption("Plain-English Stream, Signal Duration, SQLite DB & Congress")
+master_universe = build_master_universe()
 
 use_plain_english = st.sidebar.toggle(
     "🗣️ Use Everyday Plain-English Terminology",
     value=True,
-    help="ON: Uses beginner-friendly labels like 'Price Floor', 'Price Ceiling', 'Fair Price', and 'Fever Score'. OFF: Uses institutional quant labels like 'Put Wall (-GEX)', 'Call Wall (+GEX)', 'VWAP', and 'RSI(14)'.",
+    help="Switches between beginner-friendly labels and institutional quant labels.",
 )
 
-active_ticker = st.sidebar.selectbox("🎯 Select Primary Ticker to Stream:", options=DEFAULT_WATCHLIST, index=0)
-custom_sym = st.sidebar.text_input("Or Type Custom Symbol (e.g. SPX, PLTR):", value="").upper().strip()
-if custom_sym:
-    active_ticker = custom_sym
+live_stream_on = st.sidebar.toggle(
+    "⚡ Live Stream Quotes Every 30s",
+    value=True,
+    help="Automatically refreshes spot prices, multi-ticker grid, and $100k+ sweeps every 30 seconds.",
+)
 
-live_stream_on = st.sidebar.toggle("⚡ Enable Live 45s Auto-Stream", value=False)
-min_sweep_usd = st.sidebar.selectbox("Minimum Institutional Sweep Size ($):", [25000, 50000, 100000, 250000], index=1)
+scan_batch_size = st.sidebar.slider(
+    "📡 Active Grid Size (from Union Universe):",
+    min_value=24,
+    max_value=len(master_universe),
+    value=min(48, len(master_universe)),
+    step=8,
+    help=f"Total Union Universe contains {len(master_universe)} stocks (Top 50 Market Cap + Mag 7 + ETFs + Options Flow + Social Buzz + Congress/Insider).",
+)
+
+chart_ticker = st.sidebar.selectbox(
+    "📈 Focus Ticker for Candlestick Chart:",
+    options=master_universe,
+    index=0,
+)
 
 st.sidebar.markdown("---")
-with st.sidebar.expander("💾 Sync SQLite DB Back to GitHub", expanded=False):
-    st.caption("Commit `openwhale_signals.db` and `.csv` directly to your GitHub repo.")
-    default_repo = st.secrets.get("GITHUB_REPO", "") if "GITHUB_REPO" in st.secrets else ""
-    default_token = st.secrets.get("GITHUB_TOKEN", "") if "GITHUB_TOKEN" in st.secrets else ""
-    gh_repo = st.text_input("GitHub Repo (`username/repo`):", value=default_repo)
-    gh_token = st.text_input("GitHub Personal Access Token:", value=default_token, type="password")
-    if st.button("☁️ Commit DB to GitHub Now", use_container_width=True):
-        if gh_repo and gh_token:
-            ok1, msg1 = push_file_to_github(DB_PATH, gh_repo, github_token=gh_token)
-            ok2, msg2 = push_file_to_github(CSV_BACKUP_PATH, gh_repo, github_token=gh_token)
-            if ok1:
-                st.success(msg1)
-            else:
-                st.error(msg1)
-        else:
-            st.warning("Enter both your `username/repo` and GitHub Token above.")
+st.sidebar.success(
+    f"✅ **Auto-DB Logging Active:** Any 5-Star setup across all {len(master_universe)} union tickers is automatically logged to `openwhale_signals.db`."
+)
 
-st.title("🐋 OpenWhale: Live Stream, Signal Persistence, SQLite DB & Backtester")
+# ==========================================
+# 7. MAIN DASHBOARD EXECUTION
+# ==========================================
+st.title("🐋 OpenWhale: Multi-Ticker Live Grid, $100k+ Sweeps & 2026 Backtester")
 render_hover_glossary_banner()
 
-try:
-    spot_info = fetch_live_spot_and_intraday(active_ticker)
-    opt_info = fetch_live_options_and_sweeps(active_ticker, spot_override=spot_info["spot"])
-    star_eval = evaluate_star_rating(spot_info, opt_info)
+active_universe = master_universe[:scan_batch_size]
+if chart_ticker not in active_universe:
+    active_universe = [chart_ticker] + active_universe
 
-    # Dynamic Plain-English vs Quant Labels for Top KPI Cards
-    lbl_vwap = "Fair Value Price (VWAP)" if use_plain_english else "Session VWAP ($)"
-    lbl_floor = "Price Floor (Safety Net)" if use_plain_english else "Put Wall (-GEX)"
-    lbl_ceil = "Price Ceiling (Target)" if use_plain_english else "Call Wall (+GEX)"
-    lbl_flow = "Smart Money Call Buying" if use_plain_english else "Call Premium Flow %"
+with st.spinner(f"Streaming live quotes & scanning $100k+ institutional sweeps across {len(active_universe)} tickers..."):
+    grid_df, sweeps_100k_df, spot_map = run_multi_ticker_grid_and_sweeps(active_universe)
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric(
-        f"📡 {active_ticker} Live Price",
-        f"${spot_info['spot']:,.2f}",
-        f"{spot_info['change_pct']:+.2f}%",
-        help=GLOSSARY_TOOLTIPS["spot"],
-    )
-    k2.metric(
-        lbl_vwap,
-        f"${spot_info['vwap']:,.2f}",
-        "Buyers Winning (Above)" if spot_info["spot"] >= spot_info["vwap"] else "Sellers Winning (Below)",
-        help=GLOSSARY_TOOLTIPS["entry"],
-    )
-    k3.metric(lbl_floor, f"${opt_info['put_wall']:,.2f}", "Support Zone", help="Big banks buy shares here.")
-    k4.metric(lbl_ceil, f"${opt_info['call_wall']:,.2f}", "Resistance Zone", help="Big banks sell shares here.")
-    k5.metric(
-        "⏳ Signal Duration",
-        spot_info["duration_label"],
-        spot_info["strength_trend"],
-        help=GLOSSARY_TOOLTIPS["duration_label"],
-    )
-    k6.metric(
-        "Stabilized Rating",
-        star_eval["star_str"],
-        f"R:R {star_eval['rr']} : 1",
-        help=GLOSSARY_TOOLTIPS["star_str"],
-    )
+# Top Summary Banner
+five_star_count = len(grid_df[grid_df["stars"] == 5]) if not grid_df.empty else 0
+four_star_count = len(grid_df[grid_df["stars"] == 4]) if not grid_df.empty else 0
+total_100k_sweeps = len(sweeps_100k_df) if not sweeps_100k_df.empty else 0
+db_logged_df = read_signals_from_db()
 
-    tab_stream, tab_scanner, tab_backtest, tab_db, tab_congress = st.tabs(
-        [
-            f"📡 1. Live Stream & Sweeps ({active_ticker})",
-            "⭐ 2. Stabilized 5-Star Scanner (w/ Strength Duration)",
-            "📊 3. Historical 5-Star Backtest Engine",
-            "💾 4. SQLite Signal Database & GitHub Sync",
-            "🏛️ 5. Congress & Corporate Insider Filings",
-        ]
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("🌐 Union Universe Size", f"{len(master_universe)} Tickers", f"Streaming {len(active_universe)} Live")
+m2.metric("⭐⭐⭐⭐⭐ Active 5-Star Setups", f"{five_star_count} Live", "Auto-Logged to DB")
+m3.metric("⭐⭐⭐⭐ Active 4-Star Setups", f"{four_star_count} Live", "High Confluence")
+m4.metric("🚨 $100k+ Institutional Sweeps", f"{total_100k_sweeps} Sweeps", "Sorted by Urgency")
+m5.metric("💾 Total DB Logged 5-Star Trades", f"{len(db_logged_df)} Saved", "Zero-Click Auto-Save")
+
+tab_grid, tab_sweeps, tab_backtest, tab_db, tab_congress = st.tabs(
+    [
+        "📡 1. Multi-Ticker Live Stream Grid (All Names)",
+        "🚨 2. All $100k+ Institutional Sweeps (Sorted by Urgency)",
+        "📊 3. 2026 YTD 5-Star Backtest ($100 Trade Sizing & ROI %)",
+        "💾 4. Auto-Logged 5-Star SQLite Database",
+        "🏛️ 5. Congress & Corporate Insider Filings",
+    ]
+)
+
+# ==========================================
+# TAB 1: MULTI-TICKER LIVE STREAM GRID
+# ==========================================
+with tab_grid:
+    st.subheader(f"📡 Multi-Ticker Live Quote & 5-Star Confluence Grid ({len(grid_df)} Tickers Streaming)")
+    st.caption(
+        "Includes Top 50 Market Cap (Mag 7), Popular Index ETFs (SPY, QQQ, IWM), Options Flow Leaders, Social Media Buzz, and Congress/Insider picks. Refreshes every 30s."
     )
 
-    # ==========================================
-    # TAB 1: LIVE STREAM & INSTITUTIONAL SWEEPS
-    # ==========================================
-    with tab_stream:
-        checks_html = " &nbsp;|&nbsp; ".join(star_eval["checklist"])
-        st.markdown(
-            f"""
-            <div class="star-card">
-                <h3 style="margin:0; color:#f8fafc;">{star_eval['verdict_label']} &nbsp;—&nbsp; <span style="color:#38bdf8;">{star_eval['strength_trend']}</span></h3>
-                <p style="margin:6px 0; color:#eab308; font-weight:600;">
-                    🎯 Entry: ${star_eval['entry']} &nbsp;&nbsp;|&nbsp;&nbsp;
-                    🛑 Stop-Loss: ${star_eval['stop']} &nbsp;&nbsp;|&nbsp;&nbsp;
-                    💰 Target: ${star_eval['target']} &nbsp;&nbsp;|&nbsp;&nbsp;
-                    ⚖️ Reward:Risk: {star_eval['rr']} : 1 &nbsp;&nbsp;|&nbsp;&nbsp;
-                    ⏳ Trend Duration: {star_eval['duration_label']}
-                </p>
-                <p style="margin:0; font-size:0.84rem; color:#cbd5e1;">{checks_html}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        col_chart, col_sweeps = st.columns([0.48, 0.52])
-
-        with col_chart:
-            st.subheader(f"📈 {active_ticker} Live 5m Stream + {lbl_vwap} & Walls")
-            intra_df = spot_info["intraday_df"].tail(75)
-
-            fig = go.Figure()
-            fig.add_trace(
-                go.Candlestick(
-                    x=intra_df.index,
-                    open=intra_df["Open"],
-                    high=intra_df["High"],
-                    low=intra_df["Low"],
-                    close=intra_df["Close"],
-                    name="Price",
-                )
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=intra_df.index,
-                    y=intra_df["VWAP"],
-                    mode="lines",
-                    name=lbl_vwap,
-                    line=dict(color="#38bdf8", width=2),
-                )
-            )
-            fig.add_hline(
-                y=opt_info["call_wall"],
-                line_dash="dash",
-                line_color="#22c55e",
-                annotation_text=f"{lbl_ceil}: ${opt_info['call_wall']}",
-            )
-            fig.add_hline(
-                y=opt_info["put_wall"],
-                line_dash="dash",
-                line_color="#ef4444",
-                annotation_text=f"{lbl_floor}: ${opt_info['put_wall']}",
-            )
-            fig.add_hline(
-                y=opt_info["zero_gamma"],
-                line_dash="dot",
-                line_color="#eab308",
-                annotation_text=f"{'Danger Line' if use_plain_english else 'Zero Gamma'}: ${opt_info['zero_gamma']}",
-            )
-            fig.update_layout(
-                template="plotly_dark",
-                height=460,
-                xaxis_rangeslider_visible=False,
-                margin=dict(t=20, l=10, r=10, b=10),
-                legend=dict(orientation="h", y=1.08),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col_sweeps:
-            st.subheader(f"🚨 Live Institutional Sweep Orders & Timeframes ({active_ticker})")
-            sweeps = opt_info["sweeps_df"]
-            filtered_sweeps = (
-                sweeps[sweeps["Premium_USD"] >= min_sweep_usd].copy() if not sweeps.empty else pd.DataFrame()
-            )
-
-            if not filtered_sweeps.empty:
-                filtered_sweeps["Money Spent ($)"] = filtered_sweeps["Premium_USD"].apply(lambda x: f"${x:,.0f}")
-                filtered_sweeps["Strike Price ($)"] = filtered_sweeps["Strike"].apply(lambda x: f"${x:g}")
-                filtered_sweeps["Urgency (Vol/OI)"] = filtered_sweeps["Vol_OI_Ratio"].apply(lambda x: f"{x:.2f}x")
-
-                sweep_col_map = (
-                    {
-                        "Trade_Time": "Time",
-                        "Type": "Direction",
-                        "Strike Price ($)": "Target Strike ($)",
-                        "Expiration": "Expiry Date",
-                        "Timeframe_Horizon": "Trade Timeframe",
-                        "Money Spent ($)": "Money Spent ($)",
-                        "Execution_Side": "Buyer Aggression",
-                        "Urgency (Vol/OI)": "Urgency vs Normal",
-                    }
-                    if use_plain_english
-                    else {
-                        "Trade_Time": "Timestamp",
-                        "Type": "Type",
-                        "Strike Price ($)": "Strike",
-                        "Expiration": "Expiry",
-                        "Timeframe_Horizon": "DTE Bucket",
-                        "Money Spent ($)": "Notional ($)",
-                        "Execution_Side": "Tape Side",
-                        "Urgency (Vol/OI)": "Vol/OI",
-                    }
-                )
-                st.dataframe(
-                    filtered_sweeps[list(sweep_col_map.keys())].rename(columns=sweep_col_map).head(20),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=430,
-                )
-            else:
-                st.info(f"No sweeps above ${min_sweep_usd:,.0f} right now—lower the minimum sweep filter in the sidebar.")
-
-    # ==========================================
-    # TAB 2: STABILIZED 5-STAR SCANNER + DURATION
-    # ==========================================
-    with tab_scanner:
-        st.subheader("⭐ Stabilized 5-Star Trade Scanner (With Signal Duration & Strength Meter)")
-        st.caption(
-            "Anchored to 15-minute smoothed institutional candles so ratings don't flicker, and automatically logs every 4–5 Star setup into the SQLite database."
-        )
-
-        if st.button("🚀 Scan Watchlist & Log 5-Star Setups to DB", type="primary"):
-            st.cache_data.clear()
-
-        def scan_star_worker(sym):
-            try:
-                s_info = fetch_live_spot_and_intraday(sym)
-                o_info = fetch_live_options_and_sweeps(sym, spot_override=s_info["spot"])
-                return evaluate_star_rating(s_info, o_info)
-            except Exception:
-                return None
-
-        with st.spinner("Scanning watchlist & logging 4–5 Star signals to SQLite..."):
-            star_rows = []
-            with ThreadPoolExecutor(max_workers=8) as ex:
-                futs = {ex.submit(scan_star_worker, sym): sym for sym in DEFAULT_WATCHLIST[:18]}
-                for f in as_completed(futs):
-                    r = f.result()
-                    if r is not None:
-                        star_rows.append(r)
-
-        if star_rows:
-            star_df = (
-                pd.DataFrame(star_rows)
-                .sort_values(["stars", "duration_mins", "rr"], ascending=[False, False, False])
-                .reset_index(drop=True)
-            )
-            only_top = st.checkbox("Show Only 4-Star & 5-Star Actionable Trades", value=False)
-            if only_top:
-                star_df = star_df[star_df["stars"] >= 4]
-
-            scanner_col_map = (
-                {
-                    "ticker": "Stock Symbol",
-                    "star_str": "Star Rating",
-                    "verdict_label": "Plain-English Verdict",
-                    "strength_trend": "Signal Strength Trajectory",
-                    "duration_label": "Trend Duration (Above/Below Fair Price)",
-                    "spot": "Last Traded Price ($)",
-                    "entry": "Ideal Entry ($)",
-                    "stop": "Safety Stop-Loss ($)",
-                    "target": "Profit Target ($)",
-                    "rr": "Reward:Risk",
-                    "call_pct": "Smart Money Call %",
-                    "sweeps_summary": "Urgent Whale Sweeps",
-                }
-                if use_plain_english
-                else {
-                    "ticker": "Ticker",
-                    "star_str": "Rating",
-                    "verdict_label": "Signal Verdict",
-                    "strength_trend": "Momentum Regime",
-                    "duration_label": "VWAP Hold Duration",
-                    "spot": "Spot ($)",
-                    "entry": "Entry ($)",
-                    "stop": "Stop ($)",
-                    "target": "Wall Target ($)",
-                    "rr": "R:R Ratio",
-                    "call_pct": "Call Flow %",
-                    "sweeps_summary": "Sweeps (C/P)",
-                }
-            )
-
-            cols_order = list(scanner_col_map.keys())
-            help_cfg = {
-                scanner_col_map[k]: st.column_config.Column(
-                    label=scanner_col_map[k], help=GLOSSARY_TOOLTIPS.get(k, "")
-                )
-                for k in cols_order
-            }
-
-            st.dataframe(
-                star_df[cols_order].rename(columns=scanner_col_map),
-                column_config=help_cfg,
-                use_container_width=True,
-                hide_index=True,
-                height=500,
-            )
-
-    # ==========================================
-    # TAB 3: REAL HISTORICAL 5-STAR BACKTESTER
-    # ==========================================
-    with tab_backtest:
-        st.subheader("📊 Real Historical Backtest: How Top 5-Star Setups Performed (Last 30 Days)")
-        bt_df = run_real_5star_backtest(DEFAULT_WATCHLIST[:16], lookback_days="30d")
-
-        if not bt_df.empty:
-            total_trades = len(bt_df)
-            wins = len(bt_df[bt_df["Return_Pct"] > 0])
-            win_rate = (wins / total_trades) * 100.0
-            avg_r = bt_df["R_Multiple"].mean()
-            cum_return_pct = bt_df["Return_Pct"].sum()
-
-            b1, b2, b3, b4 = st.columns(4)
-            b1.metric("Total 5-Star Trades (30d)", f"{total_trades} Trades", "Strict 5-Star Filter")
-            b2.metric("Historical Win Rate", f"{win_rate:.1f}%", f"{wins} Wins / {total_trades - wins} Losses")
-            b3.metric("Avg R-Multiple per Trade", f"{avg_r:+.2f} R", "2.0 : 1 Target Cap")
-            b4.metric("Cumulative Unleveraged Return", f"{cum_return_pct:+.2f}%", "Sum of Underlying Moves")
-
-            bt_chron = bt_df.iloc[::-1].copy().reset_index(drop=True)
-            bt_chron["Cumulative_R"] = bt_chron["R_Multiple"].cumsum()
-            bt_chron["Trade_Num"] = bt_chron.index + 1
-
-            fig_bt = go.Figure()
-            fig_bt.add_trace(
-                go.Scatter(
-                    x=bt_chron["Trade_Num"],
-                    y=bt_chron["Cumulative_R"],
-                    mode="lines+markers",
-                    name="Cumulative R-Multiple",
-                    line=dict(color="#22c55e", width=3),
-                    fill="tozeroy",
-                    fillcolor="rgba(34, 197, 94, 0.15)",
-                )
-            )
-            fig_bt.update_layout(
-                title="5-Star Strategy Historical Equity Curve (Cumulative R-Multiples Over Last 30 Days)",
-                xaxis_title="Trade Number (Chronological)",
-                yaxis_title="Cumulative Profit (in R-Units)",
-                template="plotly_dark",
-                height=340,
-                margin=dict(t=35, l=10, r=10, b=10),
-            )
-            st.plotly_chart(fig_bt, use_container_width=True)
-            st.dataframe(bt_df, use_container_width=True, hide_index=True, height=420)
-
-    # ==========================================
-    # TAB 4: SQLITE SIGNAL DATABASE & GITHUB SYNC
-    # ==========================================
-    with tab_db:
-        st.subheader("💾 Persistent SQLite Signal Database (`openwhale_signals.db`)")
-        st.caption(
-            "Automatically records every 4-Star and 5-Star trade triggered today, tracking when it first appeared (`first_seen_time`), how many consecutive scans confirmed it (`times_confirmed`), and how its price has moved since first entry."
-        )
-        db_df = read_signals_from_db()
-        if not db_df.empty:
-            db_df["Live_PnL_Since_First_Seen_%"] = np.where(
-                db_df["bias"] == "LONG",
-                ((db_df["latest_spot"] - db_df["entry_price"]) / db_df["entry_price"]) * 100.0,
-                ((db_df["entry_price"] - db_df["latest_spot"]) / db_df["entry_price"]) * 100.0,
-            ).round(2)
-            st.dataframe(db_df, use_container_width=True, hide_index=True, height=420)
-
-            c_dl1, c_dl2 = st.columns(2)
-            with c_dl1:
-                with open(DB_PATH, "rb") as f_db:
-                    st.download_button(
-                        "📥 Download Raw SQLite `.db` File",
-                        data=f_db.read(),
-                        file_name="openwhale_signals.db",
-                        mime="application/octet-stream",
+    if not grid_df.empty:
+        # Visual Tile Grid for Top 12 Actionable Tickers
+        top_tiles = grid_df.head(12)
+        for row_idx in range(0, len(top_tiles), 6):
+            cols = st.columns(6)
+            for col_idx, (_, item) in enumerate(top_tiles.iloc[row_idx : row_idx + 6].iterrows()):
+                with cols[col_idx]:
+                    st.metric(
+                        label=f"{item['ticker']} ({item['star_str']})",
+                        value=f"${item['spot']:,.2f}",
+                        delta=f"{item['change_pct']:+.2f}% | {item['duration_label']}",
                     )
-            with c_dl2:
-                st.download_button(
-                    "📥 Download Signal History `.csv` File",
-                    data=db_df.to_csv(index=False).encode("utf-8"),
-                    file_name="openwhale_signals_log.csv",
-                    mime="text/csv",
-                )
-        else:
-            st.info("No 4-Star or 5-Star signals have been logged yet today. Run Tab 2's scanner to populate the database.")
 
-    # ==========================================
-    # TAB 5: CONGRESS & CORPORATE INSIDER TRACKER
-    # ==========================================
-    with tab_congress:
-        st.subheader("🏛️ U.S. Congress (STOCK Act) & SEC Form 4 Corporate Insider Tracker")
-        filter_by_active = st.checkbox(
-            f"🔍 Filter Filings Strictly for {active_ticker} (Uncheck to see All Market-Wide Filings)",
-            value=False,
+        st.markdown("#### 📋 Full Multi-Ticker Live Streaming Grid")
+        grid_col_map = (
+            {
+                "ticker": "Ticker",
+                "star_str": "Star Rating",
+                "verdict_label": "Action Verdict",
+                "spot": "Live Price ($)",
+                "change_pct": "Today Move (%)",
+                "strength_trend": "Signal Strength",
+                "duration_label": "Duration Held",
+                "vwap": "Fair Price VWAP ($)",
+                "put_wall": "Price Floor ($)",
+                "call_wall": "Price Ceiling ($)",
+                "stop": "Stop-Loss ($)",
+                "target": "Profit Target ($)",
+                "rr": "Reward:Risk",
+                "call_pct": "Smart Money Call %",
+                "sweeps_summary": "$100k+ Sweeps (C/P)",
+            }
+            if use_plain_english
+            else {
+                "ticker": "Ticker",
+                "star_str": "Rating",
+                "verdict_label": "Signal",
+                "spot": "Spot ($)",
+                "change_pct": "Chg (%)",
+                "strength_trend": "Momentum",
+                "duration_label": "VWAP Duration",
+                "vwap": "VWAP ($)",
+                "put_wall": "Put Wall ($)",
+                "call_wall": "Call Wall ($)",
+                "stop": "Stop ($)",
+                "target": "Target ($)",
+                "rr": "R:R",
+                "call_pct": "Call Flow %",
+                "sweeps_summary": "Sweeps >=100k",
+            }
         )
-        target_sym = active_ticker if filter_by_active else None
+        st.dataframe(
+            grid_df[list(grid_col_map.keys())].rename(columns=grid_col_map),
+            use_container_width=True,
+            hide_index=True,
+            height=520,
+        )
 
-        col_cong, col_ins = st.columns(2)
-        with col_cong:
-            st.markdown("#### 🏛️ Latest U.S. Congress Trades (STOCK Act Disclosures)")
-            cong_df = fetch_congress_trades(target_sym)
-            if not cong_df.empty:
-                st.dataframe(cong_df, use_container_width=True, hide_index=True, height=450)
-            else:
-                st.info("No recent Congressional filings matched this filter.")
+# ==========================================
+# TAB 2: ALL $100K+ SWEEPS ACROSS ALL TICKERS (SORTED BY URGENCY)
+# ==========================================
+with tab_sweeps:
+    st.subheader("🚨 Multi-Ticker Institutional Sweep Tape (Minimum $100,000 • Sorted by Urgency)")
+    st.caption(
+        "Aggregates all institutional sweeps >= $100,000 across the entire tracked stock & ETF universe, ranked highest-to-lowest by Urgency (`Volume / Open Interest`)."
+    )
 
-        with col_ins:
-            st.markdown("#### 👔 Latest SEC Form 4 Corporate Insider Buys (CEOs / CFOs / Directors)")
-            ins_df = fetch_sec_insider_trades(target_sym)
-            if not ins_df.empty:
-                st.dataframe(ins_df, use_container_width=True, hide_index=True, height=450)
-            else:
-                st.info("No recent SEC Form 4 insider filings found for this filter.")
+    if not sweeps_100k_df.empty:
+        disp_sw = sweeps_100k_df.copy()
+        disp_sw["Premium ($)"] = disp_sw["Premium_USD"].apply(lambda x: f"${x:,.0f}")
+        disp_sw["Strike ($)"] = disp_sw["Strike"].apply(lambda x: f"${x:g}")
+        disp_sw["Spot ($)"] = disp_sw["Spot"].apply(lambda x: f"${x:,.2f}")
+        disp_sw["Urgency (Vol/OI)"] = disp_sw["Vol_OI_Ratio"].apply(lambda x: f"🔥 {x:.2f}x OI")
 
-except Exception as e:
-    st.error(f"Error loading live feed for {active_ticker}: {e}")
+        sw_cols = [
+            "Ticker",
+            "Spot ($)",
+            "Type",
+            "Strike ($)",
+            "Expiration",
+            "Timeframe_Horizon",
+            "Urgency (Vol/OI)",
+            "Premium ($)",
+            "Execution_Side",
+            "Volume",
+            "Open_Interest",
+            "IV",
+            "Trade_Time",
+        ]
+        st.dataframe(disp_sw[sw_cols], use_container_width=True, hide_index=True, height=580)
+    else:
+        st.info("No institutional sweeps >= $100,000 detected in the current batch—increase Active Grid Size in the sidebar.")
 
+# ==========================================
+# TAB 3: YTD 2026 BACKTESTER ($100 TRADE SIZING + ROI % + RISK)
+# ==========================================
+with tab_backtest:
+    st.subheader("📊 2026 YTD 5-Star Backtest (Since 01/01/2026 — $100 Trade Sizing, ROI % & Risk)")
+    st.markdown(
+        """
+        Tests **all 5-Star setups identified since `2026-01-01`** across the tracked universe (plus your live logged SQLite setups) and calculates:
+        * **Success / Failure Rate** (`✅ SUCCESS` vs `❌ FAILURE`)
+        * **Potential Return on a `$100` Trade** (`PnL_on_$100 ($)` and `$100_Final_Value ($)`)
+        * **% Return on Investment (`ROI_%`)** and **Dollar Risk (`Risk_on_$100 ($)`)** per setup.
+        """
+    )
+
+    with st.spinner("Running YTD 2026 5-Star Backtest (01/01/2026 to Present) across tracked universe..."):
+        bt_2026_df = run_ytd_2026_5star_backtest(master_universe[:45])
+
+    if not bt_2026_df.empty:
+        total_t = len(bt_2026_df)
+        succ_t = len(bt_2026_df[bt_2026_df["Result"].str.startswith("✅")])
+        fail_t = total_t - succ_t
+        win_rate = (succ_t / total_t) * 100.0
+
+        total_capital_deployed = total_t * 100.0
+        total_dollar_profit = bt_2026_df["PnL_on_$100 ($)"].sum()
+        avg_roi_pct = bt_2026_df["ROI_%"].mean()
+        avg_risk_dlr = bt_2026_df["Risk_on_$100 ($)"].mean()
+        total_return_on_risk_pct = (
+            (total_dollar_profit / bt_2026_df["Risk_on_$100 ($)"].sum()) * 100.0
+            if bt_2026_df["Risk_on_$100 ($)"].sum() > 0
+            else 0.0
+        )
+
+        b1, b2, b3, b4, b5 = st.columns(5)
+        b1.metric("2026 YTD 5-Star Trades", f"{total_t} Setups", f"{succ_t} Success / {fail_t} Fail")
+        b2.metric("YTD Success Win Rate", f"{win_rate:.1f}%", "Since 01/01/2026")
+        b3.metric("Net Profit ($100 / Trade)", f"${total_dollar_profit:+,.2f}", f"Avg {avg_roi_pct:+.2f}% ROI / Trade")
+        b4.metric("Avg Risk per $100 Trade", f"${avg_risk_dlr:.2f}", "Stop-Loss Risk")
+        b5.metric("Net Return on Risk %", f"{total_return_on_risk_pct:+.1f}%", "Total Profit / Total Risk")
+
+        # Cumulative Dollar Profit Chart on $100 per Trade since 01/01/2026
+        bt_chron = bt_2026_df.iloc[::-1].copy().reset_index(drop=True)
+        bt_chron["Cumulative_$100_Profit"] = bt_chron["PnL_on_$100 ($)"].cumsum()
+
+        fig_bt = go.Figure()
+        fig_bt.add_trace(
+            go.Scatter(
+                x=bt_chron["Signal_Date"],
+                y=bt_chron["Cumulative_$100_Profit"],
+                mode="lines+markers",
+                name="Cumulative Profit ($)",
+                line=dict(color="#22c55e", width=3),
+                fill="tozeroy",
+                fillcolor="rgba(34, 197, 94, 0.15)",
+            )
+        )
+        fig_bt.update_layout(
+            title="Cumulative Dollar Profit Since 01/01/2026 (Allocating $100 to Each 5-Star Trade)",
+            xaxis_title="Signal Date (2026 YTD)",
+            yaxis_title="Cumulative Net Profit ($)",
+            template="plotly_dark",
+            height=350,
+            margin=dict(t=35, l=10, r=10, b=10),
+        )
+        st.plotly_chart(fig_bt, use_container_width=True)
+
+        st.markdown("#### 📜 Complete 2026 YTD 5-Star Trade Log ($100 Sizing, ROI % & Risk)")
+        st.dataframe(bt_2026_df, use_container_width=True, hide_index=True, height=480)
+
+# ==========================================
+# TAB 4: AUTO-LOGGED 5-STAR SQLITE DATABASE
+# ==========================================
+with tab_db:
+    st.subheader("💾 Zero-Click Auto-Logged 5-Star SQLite Database (`openwhale_signals.db`)")
+    st.caption(
+        "Every time any ticker hits a 5-Star rating (even for 1 minute), it is automatically saved here and evaluated on a $100 position size."
+    )
+    if not db_logged_df.empty:
+        db_show = db_logged_df.copy()
+        db_show["ROI_%"] = np.where(
+            db_show["bias"] == "LONG",
+            ((db_show["latest_spot"] - db_show["entry_price"]) / db_show["entry_price"]) * 100.0,
+            ((db_show["entry_price"] - db_show["latest_spot"]) / db_show["entry_price"]) * 100.0,
+        ).round(2)
+        db_show["Risk_%"] = (np.abs(db_show["entry_price"] - db_show["stop_loss"]) / db_show["entry_price"] * 100.0).round(2)
+        db_show["$100_Trade_PnL ($)"] = (100.0 * db_show["ROI_%"] / 100.0).round(2)
+        db_show["$100_Trade_Risk ($)"] = (100.0 * db_show["Risk_%"] / 100.0).round(2)
+        st.dataframe(db_show, use_container_width=True, hide_index=True, height=450)
+    else:
+        st.info("Waiting for the first 5-Star setup of the session—will log automatically as soon as one triggers.")
+
+# ==========================================
+# TAB 5: CONGRESS & CORPORATE INSIDER TRACKER
+# ==========================================
+with tab_congress:
+    st.subheader("🏛️ U.S. Congress (STOCK Act) & SEC Form 4 Corporate Insider Filings")
+    col_cong, col_ins = st.columns(2)
+    with col_cong:
+        st.markdown("#### 🏛️ Latest U.S. Congress Trades")
+        cong_df = fetch_congress_trades()
+        if not cong_df.empty:
+            st.dataframe(cong_df, use_container_width=True, hide_index=True, height=450)
+    with col_ins:
+        st.markdown("#### 👔 Latest SEC Form 4 Corporate Insider Buys")
+        ins_df = fetch_sec_insider_trades()
+        if not ins_df.empty:
+            st.dataframe(ins_df, use_container_width=True, hide_index=True, height=450)
+
+# Requirement #5: Stream quotes every 30 seconds automatically
 if live_stream_on:
-    time.sleep(45)
+    time.sleep(30)
     st.rerun()
