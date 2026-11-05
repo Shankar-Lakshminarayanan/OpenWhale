@@ -1,6 +1,7 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
-2026-11-05,COST,15:24:09,15:24:09,1,5,5,LONG,🔥 Gaining Strength,20,1078.34,1078.34,1065.4,1099.91,1.67,84.0
-2026-11-05,TLT,15:23:22,15:24:05,2,5,5,LONG,⚡ Newly Triggered,0,81.75,81.75,81.5,83.39,6.56,72.1
+2026-11-05,WMT,15:24:54,15:24:54,1,5,5,LONG,🔥 Gaining Strength,20,131.68,131.68,130.1,135.0,2.1,68.8
+2026-11-05,COST,15:24:09,15:24:54,2,5,5,LONG,🔥 Gaining Strength,20,1078.34,1079.39,1066.44,1100.98,1.67,84.0
+2026-11-05,TLT,15:23:22,15:24:52,3,5,5,LONG,🔥 Gaining Strength,45,81.75,81.76,81.5,83.4,6.31,72.1
 2026-11-04,AMZN,12:35:35,12:35:35,1,5,5,LONG,⚡ Newly Triggered,0,259.75,259.75,258.19,264.94,3.33,74.3
 2026-11-04,QQQ,12:34:50,12:34:50,1,5,5,SHORT,⚡ Newly Triggered,0,688.75,688.75,697.01,675.0,1.66,38.1
 2026-11-04,XLF,08:42:04,08:42:04,1,5,5,SHORT,⚡ Newly Triggered,10,57.1,57.1,57.73,55.96,1.81,28.9
