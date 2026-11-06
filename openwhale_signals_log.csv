@@ -1,7 +1,8 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
-2026-11-06,XOM,01:30:38,01:30:38,1,5,5,SHORT,🔥 Gaining Strength,170,165.75,165.75,167.74,162.44,1.66,40.2
-2026-11-06,EEM,01:30:35,01:30:35,1,5,5,SHORT,🔥 Gaining Strength,520,58.0,58.0,58.7,56.84,1.66,12.5
-2026-11-06,XLI,01:30:34,01:30:34,1,5,5,SHORT,🔥 Gaining Strength,485,162.23,162.23,164.18,155.0,3.71,39.4
+2026-11-06,SQQQ,15:38:56,15:38:56,1,5,5,LONG,⚡ Newly Triggered,15,47.47,47.47,46.9,50.0,4.44,87.3
+2026-11-06,XOM,01:30:38,01:32:09,3,5,5,SHORT,🔥 Gaining Strength,170,165.75,165.75,167.74,162.44,1.66,40.2
+2026-11-06,EEM,01:30:35,01:32:06,3,5,5,SHORT,🔥 Gaining Strength,520,58.0,58.0,58.7,56.84,1.66,12.5
+2026-11-06,XLI,01:30:34,01:32:04,3,5,5,SHORT,🔥 Gaining Strength,485,162.23,162.23,164.18,155.0,3.71,39.4
 2026-11-05,XOM,16:08:56,16:22:36,18,5,5,LONG,⚡ Newly Triggered,0,172.98,171.9,170.0,180.0,4.26,64.7
 2026-11-05,TSLA,16:08:57,16:22:36,18,5,5,SHORT,❄️ Cooling Off,115,343.48,349.89,350.0,330.0,180.82,22.9
 2026-11-05,ORCL,16:20:28,16:22:36,4,5,5,SHORT,❄️ Cooling Off,115,114.64,115.15,116.53,110.0,3.73,31.8
