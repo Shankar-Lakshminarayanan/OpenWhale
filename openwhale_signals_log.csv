@@ -1,4 +1,5 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-06,GDX,15:40:32,15:40:32,1,5,5,LONG,🔥 Gaining Strength,60,85.69,85.69,84.66,87.4,1.66,86.6
 2026-11-06,SOXL,15:40:31,15:40:31,1,5,5,SHORT,🔥 Gaining Strength,45,44.6,44.6,45.14,40.0,8.52,40.7
 2026-11-06,SQQQ,15:38:56,15:40:30,2,5,5,LONG,❄️ Cooling Off,20,47.47,47.3,46.75,50.0,4.91,87.4
 2026-11-06,SMH,15:40:29,15:40:29,1,5,5,SHORT,🔥 Gaining Strength,45,460.66,460.66,465.0,445.0,3.61,38.5
