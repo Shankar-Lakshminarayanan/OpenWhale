@@ -1,4 +1,5 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-06,XOM,01:30:38,01:30:38,1,5,5,SHORT,🔥 Gaining Strength,170,165.75,165.75,167.74,162.44,1.66,40.2
 2026-11-06,EEM,01:30:35,01:30:35,1,5,5,SHORT,🔥 Gaining Strength,520,58.0,58.0,58.7,56.84,1.66,12.5
 2026-11-06,XLI,01:30:34,01:30:34,1,5,5,SHORT,🔥 Gaining Strength,485,162.23,162.23,164.18,155.0,3.71,39.4
 2026-11-05,XOM,16:08:56,16:22:36,18,5,5,LONG,⚡ Newly Triggered,0,172.98,171.9,170.0,180.0,4.26,64.7
