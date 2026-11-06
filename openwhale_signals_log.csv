@@ -1,4 +1,5 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-06,AMZN,15:46:13,15:46:13,1,5,5,LONG,💪 Holding Steady,410,263.75,263.75,260.58,269.02,1.66,70.9
 2026-11-06,GDX,15:40:32,15:46:12,9,5,5,LONG,💪 Holding Steady,65,85.69,85.94,84.91,87.66,1.67,86.5
 2026-11-06,TLT,15:46:10,15:46:10,1,5,5,LONG,🔥 Gaining Strength,55,81.99,81.99,81.5,83.63,3.35,83.0
 2026-11-06,SQQQ,15:38:56,15:46:10,10,5,5,LONG,❄️ Cooling Off,25,47.47,47.11,46.76,50.0,8.26,88.3
