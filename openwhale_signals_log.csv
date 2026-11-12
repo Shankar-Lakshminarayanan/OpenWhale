@@ -1,4 +1,5 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-12,AMD,14:58:02,14:58:02,1,5,5,LONG,⚡ Newly Triggered,0,563.8,563.8,557.03,600.0,5.35,76.2
 2026-11-12,AVGO,14:53:34,14:53:34,1,5,5,LONG,⚡ Newly Triggered,10,360.48,360.48,356.15,370.0,2.2,85.2
 2026-11-09,GLD,22:58:33,23:41:35,5,5,5,LONG,❄️ Cooling Off,90,379.5,379.05,374.5,386.63,1.67,76.3
 2026-11-09,AAPL,23:41:35,23:41:35,1,5,5,LONG,❄️ Cooling Off,110,350.75,350.75,350.0,360.0,12.33,64.1
