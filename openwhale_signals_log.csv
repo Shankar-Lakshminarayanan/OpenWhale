@@ -1,4 +1,5 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-17,IWM,21:01:18,21:01:18,1,5,5,SHORT,❄️ Cooling Off,155,269.12,269.12,272.0,265.0,1.43,14.1
 2026-11-17,AMZN,21:00:41,21:00:41,1,5,5,LONG,🔥 Gaining Strength,50,257.85,257.85,254.76,265.0,2.31,58.0
 2026-11-17,GLD,20:59:58,21:00:40,2,5,5,SHORT,❄️ Cooling Off,220,352.45,352.46,356.69,345.0,1.76,32.4
 2026-11-17,XLP,20:59:55,21:00:37,2,5,5,SHORT,❄️ Cooling Off,315,91.44,91.47,92.0,90.0,2.77,16.9
