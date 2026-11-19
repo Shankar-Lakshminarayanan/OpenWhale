@@ -1,5 +1,7 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-19,SOXL,13:19:25,13:19:25,1,5,5,LONG,🔥 Gaining Strength,380,54.03,54.03,53.71,55.0,3.03,61.1
 2026-11-19,TQQQ,13:19:24,13:19:24,1,5,5,LONG,❄️ Cooling Off,385,55.65,55.65,54.98,60.0,6.49,64.0
+2026-11-19,GLD,13:19:24,13:19:24,1,5,5,SHORT,❄️ Cooling Off,280,340.36,340.36,344.44,333.55,1.67,27.5
 2026-11-19,XLP,13:19:21,13:19:21,1,5,5,SHORT,⚡ Newly Triggered,0,90.6,90.6,91.0,90.0,1.5,35.4
 2026-11-17,AVGO,22:50:25,22:50:25,1,5,5,LONG,🔥 Gaining Strength,155,349.5,349.5,345.31,356.49,1.67,58.2
 2026-11-17,SOXL,22:49:37,22:50:23,2,5,5,LONG,🔥 Gaining Strength,120,53.27,53.2,52.56,55.0,2.81,64.0
