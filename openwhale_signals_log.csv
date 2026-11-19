@@ -1,4 +1,6 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-19,TSLA,13:20:49,13:20:49,1,5,5,LONG,🔥 Gaining Strength,380,391.51,391.51,386.81,400.0,1.81,61.2
+2026-11-19,GDX,13:20:49,13:20:49,1,5,5,SHORT,💪 Holding Steady,380,74.12,74.12,75.01,70.0,4.63,11.1
 2026-11-19,TQQQ,13:19:24,13:20:47,3,5,5,LONG,❄️ Cooling Off,390,55.65,55.62,54.95,60.0,6.54,64.0
 2026-11-19,GLD,13:19:24,13:20:47,2,5,5,SHORT,❄️ Cooling Off,280,340.36,340.25,344.33,333.44,1.67,27.5
 2026-11-19,AMZN,13:20:47,13:20:47,1,5,5,LONG,🔥 Gaining Strength,880,273.8,273.8,270.51,279.28,1.67,82.2
