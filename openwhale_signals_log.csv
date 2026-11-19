@@ -1,4 +1,8 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
+2026-11-19,SMCI,19:30:25,19:30:25,1,5,5,SHORT,❄️ Cooling Off,270,24.27,24.27,24.56,23.0,4.38,40.9
+2026-11-19,ARM,19:30:25,19:30:25,1,5,5,SHORT,❄️ Cooling Off,265,179.58,179.58,181.73,175.0,2.13,32.4
+2026-11-19,MSTR,19:30:24,19:30:24,1,5,5,SHORT,💪 Holding Steady,285,87.82,87.82,88.87,85.0,2.69,37.6
+2026-11-19,CAT,19:30:24,19:30:24,1,5,5,SHORT,❄️ Cooling Off,270,542.61,542.61,549.12,531.76,1.67,25.7
 2026-11-19,MCD,19:30:23,19:30:23,1,5,5,LONG,❄️ Cooling Off,75,271.66,271.66,270.0,275.0,2.01,72.9
 2026-11-19,CSCO,19:30:22,19:30:22,1,5,5,SHORT,❄️ Cooling Off,305,95.38,95.38,96.0,93.47,3.08,42.8
 2026-11-19,JNJ,19:28:38,19:30:21,4,5,5,SHORT,❄️ Cooling Off,30,266.77,266.75,269.73,260.0,2.27,40.4
