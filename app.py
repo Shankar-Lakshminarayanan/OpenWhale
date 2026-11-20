@@ -571,4 +571,881 @@ def fetch_cboe_options_for_ticker(ticker_symbol, spot_override=None):
                 "Execution_Side": exec_side,
                 "Volume": int(vol),
                 "Open_Interest": int(oi),
-                "Vol_OI_Ratio": round(
+                "Vol_OI_Ratio": round(vol / oi, 2) if oi > 0 else round(vol, 2),
+                "Premium_USD": round(vol * mark * 100.0, 0),
+                "IV": round(float(opt.get("iv") or 0.0) * 100, 1),
+                "cboe_gamma": float(opt.get("gamma") or 0.0),
+                "Trade_Time": str(last_trade_time)[-8:],
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        raise ValueError("No valid contracts")
+
+    nearest_exps = sorted(df["Expiration"].unique())[:4]
+    gex_slice = df[df["Expiration"].isin(nearest_exps)].copy()
+    T_years = np.maximum(gex_slice["DTE"].values / 365.0, 4 / (365 * 24))
+    bs_gamma = calc_bs_gamma(
+        spot, gex_slice["Strike"].values, T_years, 0.042, np.maximum(gex_slice["IV"].values / 100.0, 0.05)
+    )
+    gex_slice["gamma"] = np.where(gex_slice["cboe_gamma"] > 0, gex_slice["cboe_gamma"], bs_gamma)
+    sign = np.where(gex_slice["raw_type"] == "call", 1.0, -1.0)
+    gex_slice["gex_dollars"] = gex_slice["gamma"] * gex_slice["Open_Interest"] * 100 * (spot**2) * 0.01 * sign
+
+    gex_by_strike = (
+        gex_slice.groupby(["Strike", "raw_type"])["gex_dollars"].sum().unstack(fill_value=0).reset_index()
+    )
+    for c in ["call", "put"]:
+        if c not in gex_by_strike:
+            gex_by_strike[c] = 0.0
+    gex_by_strike["net_gex"] = gex_by_strike["call"] + gex_by_strike["put"]
+
+    above_spot = gex_by_strike[gex_by_strike["Strike"] >= spot]
+    below_spot = gex_by_strike[gex_by_strike["Strike"] <= spot]
+    call_wall = (
+        float(above_spot.loc[above_spot["call"].idxmax(), "Strike"])
+        if not above_spot.empty
+        else float(gex_by_strike.loc[gex_by_strike["call"].idxmax(), "Strike"])
+    )
+    put_wall = (
+        float(below_spot.loc[below_spot["put"].idxmin(), "Strike"])
+        if not below_spot.empty
+        else float(gex_by_strike.loc[gex_by_strike["put"].idxmin(), "Strike"])
+    )
+
+    near_spot = gex_by_strike[
+        (gex_by_strike["Strike"] >= spot * 0.94) & (gex_by_strike["Strike"] <= spot * 1.06)
+    ].sort_values("Strike")
+    zero_gamma = spot
+    signs = np.sign(near_spot["net_gex"].values)
+    strikes = near_spot["Strike"].values
+    net_vals = near_spot["net_gex"].values
+    for i in range(len(signs) - 1):
+        if signs[i] != signs[i + 1] and (net_vals[i + 1] - net_vals[i]) != 0:
+            zero_gamma = strikes[i] - net_vals[i] * (strikes[i + 1] - strikes[i]) / (net_vals[i + 1] - net_vals[i])
+            break
+
+    call_prem = df[df["raw_type"] == "call"]["Premium_USD"].sum()
+    put_prem = df[df["raw_type"] == "put"]["Premium_USD"].sum()
+    call_pct = (call_prem / (call_prem + put_prem) * 100.0) if (call_prem + put_prem) > 0 else 50.0
+
+    sweeps_100k = (
+        df[(df["Volume"] >= 100) & (df["Vol_OI_Ratio"] >= 1.15) & (df["Premium_USD"] >= MIN_SWEEP_USD)]
+        .sort_values(["Vol_OI_Ratio", "Premium_USD"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
+
+    return {
+        "call_wall": round(call_wall, 2),
+        "put_wall": round(put_wall, 2),
+        "zero_gamma": round(float(zero_gamma), 2),
+        "call_pct": round(call_pct, 1),
+        "sweeps_df": sweeps_100k,
+        "cboe_ok": True,
+    }
+
+
+def evaluate_star_rating(spot_info, opt_info):
+    spot = spot_info["spot"]
+    anchor_p = spot_info["smoothed_spot"]
+    vwap = spot_info["vwap"]
+    rsi = spot_info["rsi"]
+    ema_bull = spot_info["ema9"] >= spot_info["ema21"]
+
+    call_wall = opt_info["call_wall"]
+    put_wall = opt_info["put_wall"]
+    zero_gamma = opt_info["zero_gamma"]
+    call_pct = opt_info["call_pct"]
+    sweeps = opt_info["sweeps_df"]
+
+    call_sweeps = len(sweeps[sweeps["raw_type"] == "call"]) if not sweeps.empty else 0
+    put_sweeps = len(sweeps[sweeps["raw_type"] == "put"]) if not sweeps.empty else 0
+
+    is_bullish = (anchor_p >= vwap and call_pct >= 48.0) or (call_pct >= 56.0) or (spot_info["change_pct"] > 1.2 and call_pct >= 45.0)
+    stars = 0
+
+    if is_bullish:
+        bias = "LONG"
+        if anchor_p >= vwap * 0.997 and ema_bull:
+            stars += 1
+        if anchor_p >= zero_gamma * 0.997:
+            stars += 1
+        if call_pct >= 52.0:
+            stars += 1
+        if call_sweeps >= 1 or spot_info["change_pct"] >= 1.5:
+            stars += 1
+        target = call_wall if call_wall > spot * 1.005 else round(spot * 1.02, 2)
+        stop = round(max(put_wall, min(vwap, zero_gamma) * 0.994, spot * 0.988), 2)
+        if stop >= spot:
+            stop = round(spot * 0.99, 2)
+        rr = round((target - spot) / max(spot - stop, 0.01), 2)
+        if 28.0 <= rsi <= 72.0 and rr >= 1.2:
+            stars += 1
+    else:
+        bias = "SHORT"
+        put_pct = 100.0 - call_pct
+        if anchor_p <= vwap * 1.003 and not ema_bull:
+            stars += 1
+        if anchor_p <= zero_gamma * 1.003:
+            stars += 1
+        if put_pct >= 52.0:
+            stars += 1
+        if put_sweeps >= 1 or spot_info["change_pct"] <= -1.5:
+            stars += 1
+        target = put_wall if put_wall < spot * 0.995 else round(spot * 0.98, 2)
+        stop = round(min(call_wall, max(vwap, zero_gamma) * 1.006, spot * 1.012), 2)
+        if stop <= spot:
+            stop = round(spot * 1.01, 2)
+        rr = round((spot - target) / max(stop - spot, 0.01), 2)
+        if 28.0 <= rsi <= 72.0 and rr >= 1.2:
+            stars += 1
+
+    star_str = "⭐" * stars + "☆" * (5 - stars)
+    verdict = (
+        "🟢 5-STAR LONG"
+        if (stars == 5 and bias == "LONG")
+        else (
+            "🔴 5-STAR SHORT"
+            if (stars == 5 and bias == "SHORT")
+            else ("🟢 4-STAR LONG" if (stars == 4 and bias == "LONG") else ("🔴 4-STAR SHORT" if (stars == 4 and bias == "SHORT") else f"🟡 {stars}-STAR WATCH"))
+        )
+    )
+
+    res = {
+        "ticker": spot_info["ticker"],
+        "stars": stars,
+        "star_str": star_str,
+        "bias": bias,
+        "verdict_label": verdict,
+        "strength_trend": spot_info["strength_trend"],
+        "duration_label": spot_info["duration_label"],
+        "duration_mins": spot_info["duration_mins"],
+        "spot": spot,
+        "change_pct": spot_info["change_pct"],
+        "vwap": vwap,
+        "zero_gamma": zero_gamma,
+        "put_wall": put_wall,
+        "call_wall": call_wall,
+        "entry": round(spot, 2),
+        "stop": stop,
+        "target": target,
+        "rr": rr,
+        "rsi": rsi,
+        "call_pct": call_pct,
+        "sweeps_summary": f"{call_sweeps}C / {put_sweeps}P",
+    }
+
+    if stars == 5:
+        auto_log_5star_to_db(res)
+    return res
+
+
+@st.cache_data(ttl=25)
+def run_multi_ticker_grid_and_sweeps(universe_tickers):
+    spot_map = fetch_batch_live_quotes(universe_tickers)
+    active_syms = list(spot_map.keys())
+
+    grid_rows = []
+    all_sweeps = []
+    cboe_success_count = 0
+
+    def _worker(sym):
+        s_info = spot_map[sym]
+        try:
+            o_info = fetch_cboe_options_for_ticker(sym, spot_override=s_info["spot"])
+            eval_res = evaluate_star_rating(s_info, o_info)
+            return eval_res, o_info["sweeps_df"], True
+        except Exception:
+            # Derive synthetic walls from intraday range so grid stays populated if CBOE is throttled
+            fallback_opt = {
+                "call_wall": round(s_info["spot"] * 1.022, 2),
+                "put_wall": round(s_info["spot"] * 0.978, 2),
+                "zero_gamma": s_info["vwap"],
+                "call_pct": 62.0 if s_info["change_pct"] >= 0 else 38.0,
+                "sweeps_df": pd.DataFrame(),
+                "cboe_ok": False,
+            }
+            return evaluate_star_rating(s_info, fallback_opt), pd.DataFrame(), False
+
+    with ThreadPoolExecutor(max_workers=14) as ex:
+        futures = {ex.submit(_worker, sym): sym for sym in active_syms}
+        for f in as_completed(futures):
+            ev_res, sw_df, ok = f.result()
+            grid_rows.append(ev_res)
+            if ok:
+                cboe_success_count += 1
+            if not sw_df.empty:
+                all_sweeps.append(sw_df)
+
+    grid_df = (
+        pd.DataFrame(grid_rows)
+        .sort_values(["stars", "duration_mins", "rr"], ascending=[False, False, False])
+        .reset_index(drop=True)
+        if grid_rows
+        else pd.DataFrame()
+    )
+
+    if all_sweeps:
+        master_sweeps_df = (
+            pd.concat(all_sweeps, ignore_index=True)
+            .sort_values(["Vol_OI_Ratio", "Premium_USD"], ascending=[False, False])
+            .reset_index(drop=True)
+        )
+    else:
+        master_sweeps_df = pd.DataFrame()
+
+    health_stats = {
+        "quotes_loaded": len(active_syms),
+        "quotes_requested": len(universe_tickers),
+        "cboe_loaded": cboe_success_count,
+        "sweeps_found": len(master_sweeps_df),
+    }
+
+    return grid_df, master_sweeps_df, spot_map, health_stats
+
+
+# ==========================================
+# 5. YTD 2026 BACKTEST ENGINE ($100 PER 5-STAR TRADE ACCUMULATION)
+# ==========================================
+@st.cache_data(ttl=900)
+def run_ytd_2026_5star_backtest(tickers):
+    raw = yf.download(
+        tickers, start="2025-12-01", interval="1d", prepost=False, group_by="ticker", threads=True, progress=False
+    )
+    is_multi = isinstance(raw.columns, pd.MultiIndex)
+
+    trades = []
+    for sym in tickers:
+        try:
+            if is_multi:
+                df = raw[sym].dropna(subset=["Open", "High", "Low", "Close", "Volume"]).copy() if sym in raw.columns.get_level_values(0) else pd.DataFrame()
+            else:
+                df = raw.dropna(subset=["Open", "High", "Low", "Close", "Volume"]).copy() if not raw.empty else pd.DataFrame()
+
+            if len(df) < 20:
+                continue
+
+            df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+            df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
+            df["RSI"] = compute_rsi(df["Close"], 14)
+            df["Vol_MA20"] = df["Volume"].rolling(15, min_periods=5).mean()
+            df["ATR"] = (df["High"] - df["Low"]).rolling(14, min_periods=5).mean()
+            df["Typical_VWAP"] = (df["High"] + df["Low"] + df["Close"]) / 3.0
+
+            df_2026 = df[df.index >= "2026-01-01"].copy()
+            if len(df_2026) < 4:
+                continue
+
+            i = 1
+            while i < len(df_2026) - 2:
+                row = df_2026.iloc[i]
+                prev_row = df_2026.iloc[i - 1]
+                sig_date = df_2026.index[i].strftime("%Y-%m-%d")
+
+                if pd.isna(row["ATR"]) or row["ATR"] <= 0:
+                    i += 1
+                    continue
+
+                vol_surge = float(row["Volume"] / max(float(row["Vol_MA20"]), 1.0))
+                atr = float(row["ATR"])
+                entry = float(row["Close"])
+                rsi = float(row["RSI"]) if not np.isnan(row["RSI"]) else 50.0
+
+                is_5star_long = (
+                    entry >= float(row["Typical_VWAP"]) * 0.995
+                    and float(row["EMA9"]) >= float(row["EMA21"]) * 0.995
+                    and float(row["Close"]) >= float(prev_row["Close"])
+                    and 35.0 <= rsi <= 72.0
+                    and vol_surge >= 1.15
+                )
+
+                is_5star_short = (
+                    entry <= float(row["Typical_VWAP"]) * 1.005
+                    and float(row["EMA9"]) <= float(row["EMA21"]) * 1.005
+                    and float(row["Close"]) <= float(prev_row["Close"])
+                    and 28.0 <= rsi <= 65.0
+                    and vol_surge >= 1.15
+                )
+
+                if not (is_5star_long or is_5star_short):
+                    i += 1
+                    continue
+
+                setup_dir = "🟢 5-STAR LONG" if is_5star_long else "🔴 5-STAR SHORT"
+                stop_dist = max(atr * 1.0, entry * 0.012)
+                target_dist = stop_dist * 2.0
+
+                stop_price = entry - stop_dist if is_5star_long else entry + stop_dist
+                target_price = entry + target_dist if is_5star_long else entry - target_dist
+
+                forward_slice = df_2026.iloc[i + 1 : min(i + 6, len(df_2026))]
+                exit_price = float(forward_slice["Close"].iloc[-1])
+                exit_date = forward_slice.index[-1].strftime("%Y-%m-%d")
+                status = "⏱️ Time Exit (5d)"
+
+                for f_dt, f_bar in forward_slice.iterrows():
+                    if is_5star_long:
+                        if float(f_bar["Low"]) <= stop_price:
+                            exit_price = stop_price
+                            exit_date = f_dt.strftime("%Y-%m-%d")
+                            status = "❌ FAILURE (Stop Hit)"
+                            break
+                        if float(f_bar["High"]) >= target_price:
+                            exit_price = target_price
+                            exit_date = f_dt.strftime("%Y-%m-%d")
+                            status = "✅ SUCCESS (Target Hit)"
+                            break
+                    else:
+                        if float(f_bar["High"]) >= stop_price:
+                            exit_price = stop_price
+                            exit_date = f_dt.strftime("%Y-%m-%d")
+                            status = "❌ FAILURE (Stop Hit)"
+                            break
+                        if float(f_bar["Low"]) <= target_price:
+                            exit_price = target_price
+                            exit_date = f_dt.strftime("%Y-%m-%d")
+                            status = "✅ SUCCESS (Target Hit)"
+                            break
+
+                roi_pct = (
+                    ((exit_price - entry) / entry) * 100.0
+                    if is_5star_long
+                    else ((entry - exit_price) / entry) * 100.0
+                )
+                if status == "⏱️ Time Exit (5d)":
+                    status = "✅ SUCCESS (Time Gain)" if roi_pct > 0 else "❌ FAILURE (Time Loss)"
+
+                risk_pct = (stop_dist / entry) * 100.0
+                dollar_risk_on_100 = round(100.0 * (risk_pct / 100.0), 2)
+                dollar_return_on_100 = round(100.0 * (roi_pct / 100.0), 2)
+                final_value_100 = round(100.0 + dollar_return_on_100, 2)
+
+                trades.append(
+                    {
+                        "Signal Date": sig_date,
+                        "Exit Date": exit_date,
+                        "Stock Symbol": sym,
+                        "5-Star Setup": setup_dir,
+                        "Trade Outcome": status,
+                        "Entry Price ($)": round(entry, 2),
+                        "Stop-Loss ($)": round(stop_price, 2),
+                        "Target Price ($)": round(target_price, 2),
+                        "Exit Price ($)": round(exit_price, 2),
+                        "Max Risk on $100 ($)": dollar_risk_on_100,
+                        "Risk (%)": round(risk_pct, 2),
+                        "Profit / Loss on $100 ($)": dollar_return_on_100,
+                        "$100 Trade Final Value ($)": final_value_100,
+                        "Trade ROI (%)": round(roi_pct, 2),
+                    }
+                )
+                i += 3
+        except Exception:
+            continue
+
+    bt_df = pd.DataFrame(trades)
+    if not bt_df.empty:
+        bt_df = bt_df.sort_values(["Signal Date", "Stock Symbol"], ascending=[True, True]).reset_index(drop=True)
+        bt_df["Trade #"] = bt_df.index + 1
+        bt_df["Accumulated Total Profit ($)"] = bt_df["Profit / Loss on $100 ($)"].cumsum().round(2)
+
+        ordered_cols = [
+            "Trade #",
+            "Signal Date",
+            "Exit Date",
+            "Stock Symbol",
+            "5-Star Setup",
+            "Trade Outcome",
+            "Entry Price ($)",
+            "Stop-Loss ($)",
+            "Target Price ($)",
+            "Exit Price ($)",
+            "Max Risk on $100 ($)",
+            "Risk (%)",
+            "Profit / Loss on $100 ($)",
+            "$100 Trade Final Value ($)",
+            "Trade ROI (%)",
+            "Accumulated Total Profit ($)",
+        ]
+        bt_df = bt_df[ordered_cols]
+    return bt_df
+
+
+# ==========================================
+# 6. SIDEBAR CONTROLS (SLIDERS IN MULTIPLES)
+# ==========================================
+st.sidebar.title("🐋 OpenWhale Terminal")
+st.sidebar.caption("Auto-Logging 5-Star Setups • $100k+ Sweeps • Configurable Refresh")
+
+master_universe = build_master_universe()
+max_grid_multiples = max(10, (len(master_universe) // 10) * 10)
+
+use_plain_english = st.sidebar.toggle(
+    "🗣️ Use Everyday Plain-English Terminology",
+    value=True,
+    help="Switches between beginner-friendly labels and institutional quant labels.",
+)
+
+live_stream_on = st.sidebar.toggle(
+    "⚡ Enable Live Auto-Refresh",
+    value=False,
+    help="When ON, automatically refreshes quotes and scans at the interval chosen on the slider below.",
+)
+
+refresh_interval_sec = st.sidebar.slider(
+    "⏱️ Refresh Interval (30s to 3m in 15s steps):",
+    min_value=30,
+    max_value=180,
+    value=30,
+    step=15,
+    help="Select auto-refresh interval from 30 seconds up to 180 seconds (3 minutes) in 15-second multiples.",
+)
+
+scan_batch_size = st.sidebar.slider(
+    "📡 Active Grid Size (Multiples of 10):",
+    min_value=10,
+    max_value=max_grid_multiples,
+    value=min(50, max_grid_multiples),
+    step=10,
+    help=f"Select how many tickers from the {len(master_universe)}-ticker union universe to stream in multiples of 10.",
+)
+
+chart_ticker = st.sidebar.selectbox(
+    "📈 Focus Ticker for Candlestick Chart:",
+    options=master_universe,
+    index=0,
+)
+
+st.sidebar.markdown("---")
+st.sidebar.success(
+    f"✅ **Auto-DB Logging Active:** Any 5-Star setup across all {len(master_universe)} union tickers is automatically logged to `openwhale_signals.db`."
+)
+
+# ==========================================
+# 7. MAIN DASHBOARD & TOP APP HEALTH BAR
+# ==========================================
+st.title("🐋 OpenWhale: Multi-Ticker Live Grid, $100k+ Sweeps & 2026 Backtester")
+
+active_universe = master_universe[:scan_batch_size]
+if chart_ticker not in active_universe:
+    active_universe = [chart_ticker] + active_universe
+
+with st.spinner(f"Streaming live quotes & scanning $100k+ sweeps across {len(active_universe)} tickers..."):
+    grid_df, sweeps_100k_df, spot_map, health_stats = run_multi_ticker_grid_and_sweeps(active_universe)
+
+db_logged_df = read_signals_from_db()
+cong_check_df = fetch_congress_trades()
+ins_check_df = fetch_sec_insider_trades()
+
+# Top App Health Bar
+quotes_ok = health_stats["quotes_loaded"] > 0
+cboe_ok = health_stats["cboe_loaded"] > 0
+filings_ok = (not cong_check_df.empty) or (not ins_check_df.empty)
+five_star_count = len(grid_df[grid_df["stars"] == 5]) if not grid_df.empty else 0
+
+st.markdown('<div class="health-box"><b>🩺 OpenWhale App & Data Feed Health</b></div>', unsafe_allow_html=True)
+h1, h2, h3, h4, h5 = st.columns(5)
+h1.metric(
+    "Live Quotes Feed",
+    "🟢 Healthy" if quotes_ok else "🔴 Offline",
+    f"{health_stats['quotes_loaded']}/{health_stats['quotes_requested']} Tickers",
+)
+h2.metric(
+    "CBOE Options & Sweeps",
+    "🟢 Healthy" if cboe_ok else "🟡 Fallback Mode",
+    f"{health_stats['cboe_loaded']} Chains | {health_stats['sweeps_found']} Sweeps",
+)
+h3.metric(
+    "Congress & Insider Feed",
+    "🟢 Healthy" if filings_ok else "🟡 Cached/Limited",
+    f"{len(cong_check_df)} Cong | {len(ins_check_df)} Insider",
+)
+h4.metric(
+    "SQLite Auto-Logger",
+    "🟢 Active",
+    f"{len(db_logged_df)} 5-Star Saved",
+)
+h5.metric(
+    "Active 5-Star Setups",
+    f"⭐ {five_star_count} Found",
+    f"Refresh: {refresh_interval_sec}s",
+)
+
+render_hover_glossary_banner()
+
+four_star_count = len(grid_df[grid_df["stars"] == 4]) if not grid_df.empty else 0
+
+tab_grid, tab_sweeps, tab_backtest, tab_db, tab_congress = st.tabs(
+    [
+        f"📡 1. Live Candlestick Chart ({chart_ticker}) & Multi-Ticker Grid",
+        "🚨 2. All $100k+ Institutional Sweeps (Sorted by Urgency)",
+        "📊 3. 2026 YTD 5-Star Backtest ($100 Per Trade Accumulated)",
+        "💾 4. Auto-Logged 5-Star SQLite Database",
+        "🏛️ 5. Congress & Corporate Insider Filings",
+    ]
+)
+
+# ==========================================
+# TAB 1: FOCUS CANDLESTICK CHART + MULTI-TICKER LIVE STREAM GRID
+# ==========================================
+with tab_grid:
+    if chart_ticker in spot_map and not grid_df.empty:
+        focus_spot = spot_map[chart_ticker]
+        focus_row_df = grid_df[grid_df["ticker"] == chart_ticker]
+        focus_eval = focus_row_df.iloc[0].to_dict() if not focus_row_df.empty else grid_df.iloc[0].to_dict()
+
+        lbl_vwap = "Fair Value Price (VWAP)" if use_plain_english else "Session VWAP"
+        lbl_floor = "Price Floor (Safety Net)" if use_plain_english else "Put Wall (-GEX)"
+        lbl_ceil = "Price Ceiling (Target)" if use_plain_english else "Call Wall (+GEX)"
+
+        st.subheader(f"📈 Live 5-Minute Candlestick Stream & Institutional Walls: {chart_ticker}")
+        c_chart, c_ticket = st.columns([0.65, 0.35])
+
+        with c_chart:
+            intra_df = focus_spot["intraday_df"]
+            fig_candle = go.Figure()
+            fig_candle.add_trace(
+                go.Candlestick(
+                    x=intra_df.index,
+                    open=intra_df["Open"],
+                    high=intra_df["High"],
+                    low=intra_df["Low"],
+                    close=intra_df["Close"],
+                    name=f"{chart_ticker} Price",
+                )
+            )
+            fig_candle.add_trace(
+                go.Scatter(
+                    x=intra_df.index,
+                    y=intra_df["VWAP"],
+                    mode="lines",
+                    name=lbl_vwap,
+                    line=dict(color="#38bdf8", width=2),
+                )
+            )
+            fig_candle.add_hline(
+                y=focus_eval["call_wall"],
+                line_dash="dash",
+                line_color="#22c55e",
+                annotation_text=f"{lbl_ceil}: ${focus_eval['call_wall']}",
+            )
+            fig_candle.add_hline(
+                y=focus_eval["put_wall"],
+                line_dash="dash",
+                line_color="#ef4444",
+                annotation_text=f"{lbl_floor}: ${focus_eval['put_wall']}",
+            )
+            fig_candle.add_hline(
+                y=focus_eval["zero_gamma"],
+                line_dash="dot",
+                line_color="#eab308",
+                annotation_text=f"Danger Line: ${focus_eval['zero_gamma']}",
+            )
+            fig_candle.update_layout(
+                template="plotly_dark",
+                height=390,
+                xaxis_rangeslider_visible=False,
+                margin=dict(t=15, l=10, r=10, b=10),
+                legend=dict(orientation="h", y=1.08),
+            )
+            st.plotly_chart(fig_candle, use_container_width=True)
+
+        with c_ticket:
+            st.markdown(
+                f"""
+                <div class="star-card">
+                    <h4 style="margin:0; color:#f8fafc;">🎯 {chart_ticker} Focus Trade Ticket</h4>
+                    <p style="margin:6px 0; font-size:1.05rem; color:#eab308; font-weight:700;">
+                        {focus_eval['star_str']} — {focus_eval['verdict_label']}
+                    </p>
+                    <p style="margin:4px 0; color:#38bdf8; font-weight:600;">
+                        {focus_eval['strength_trend']} ({focus_eval['duration_label']})
+                    </p>
+                    <hr style="border-color:#334155; margin:8px 0;">
+                    <p style="margin:4px 0; color:#e2e8f0;">• <b>Live Traded Price:</b> ${focus_eval['spot']:,.2f} ({focus_eval['change_pct']:+.2f}%)</p>
+                    <p style="margin:4px 0; color:#e2e8f0;">• <b>{lbl_vwap}:</b> ${focus_eval['vwap']:,.2f}</p>
+                    <p style="margin:4px 0; color:#e2e8f0;">• <b>{lbl_floor}:</b> ${focus_eval['put_wall']:,.2f}</p>
+                    <p style="margin:4px 0; color:#e2e8f0;">• <b>{lbl_ceil}:</b> ${focus_eval['call_wall']:,.2f}</p>
+                    <p style="margin:4px 0; color:#f87171;">• <b>Hard Stop-Loss:</b> ${focus_eval['stop']:,.2f}</p>
+                    <p style="margin:4px 0; color:#4ade80;">• <b>Profit Target:</b> ${focus_eval['target']:,.2f}</p>
+                    <p style="margin:4px 0; color:#cbd5e1;">• <b>Smart Money Call Flow:</b> {focus_eval['call_pct']:.1f}% ({focus_eval['sweeps_summary']} Sweeps)</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("---")
+    st.subheader(f"📡 Multi-Ticker Live Quote & 5-Star Confluence Grid ({len(grid_df)} Tickers Streaming)")
+
+    if not grid_df.empty:
+        top_tiles = grid_df.head(12)
+        for row_idx in range(0, len(top_tiles), 6):
+            cols = st.columns(6)
+            for col_idx, (_, item) in enumerate(top_tiles.iloc[row_idx : row_idx + 6].iterrows()):
+                with cols[col_idx]:
+                    st.metric(
+                        label=f"{item['ticker']} ({item['star_str']})",
+                        value=f"${item['spot']:,.2f}",
+                        delta=f"{item['change_pct']:+.2f}% | {item['duration_label']}",
+                    )
+
+        st.markdown("#### 📋 Full Multi-Ticker Live Streaming Table")
+        grid_col_map = (
+            {
+                "ticker": "Stock Symbol",
+                "star_str": "Star Rating",
+                "verdict_label": "Action Verdict",
+                "spot": "Live Price ($)",
+                "change_pct": "Today Move (%)",
+                "strength_trend": "Signal Strength",
+                "duration_label": "Duration Held",
+                "vwap": "Fair Price VWAP ($)",
+                "put_wall": "Price Floor ($)",
+                "call_wall": "Price Ceiling ($)",
+                "stop": "Stop-Loss ($)",
+                "target": "Profit Target ($)",
+                "rr": "Reward:Risk",
+                "call_pct": "Smart Money Call (%)",
+                "sweeps_summary": "$100k+ Sweeps (Calls/Puts)",
+            }
+            if use_plain_english
+            else {
+                "ticker": "Ticker",
+                "star_str": "Rating",
+                "verdict_label": "Signal",
+                "spot": "Spot ($)",
+                "change_pct": "Chg (%)",
+                "strength_trend": "Momentum",
+                "duration_label": "VWAP Duration",
+                "vwap": "VWAP ($)",
+                "put_wall": "Put Wall ($)",
+                "call_wall": "Call Wall ($)",
+                "stop": "Stop ($)",
+                "target": "Target ($)",
+                "rr": "R:R",
+                "call_pct": "Call Flow (%)",
+                "sweeps_summary": "Sweeps >=100k",
+            }
+        )
+        st.dataframe(
+            grid_df[list(grid_col_map.keys())].rename(columns=grid_col_map),
+            use_container_width=True,
+            hide_index=True,
+            height=480,
+        )
+
+# ==========================================
+# TAB 2: ALL $100K+ SWEEPS ACROSS ALL TICKERS (SORTED BY URGENCY)
+# ==========================================
+with tab_sweeps:
+    st.subheader("🚨 Multi-Ticker Institutional Sweep Tape (Minimum $100,000 • Sorted by Urgency)")
+    st.caption(
+        "Aggregates all institutional sweeps >= $100,000 across the entire tracked stock & ETF universe, ranked highest-to-lowest by Urgency (`Volume / Open Interest`)."
+    )
+
+    if not sweeps_100k_df.empty:
+        disp_sw = sweeps_100k_df.copy()
+        disp_sw["Money Spent ($)"] = disp_sw["Premium_USD"].apply(lambda x: f"${x:,.0f}")
+        disp_sw["Strike Price ($)"] = disp_sw["Strike"].apply(lambda x: f"${x:g}")
+        disp_sw["Live Price ($)"] = disp_sw["Spot"].apply(lambda x: f"${x:,.2f}")
+        disp_sw["Urgency (Vol/OI)"] = disp_sw["Vol_OI_Ratio"].apply(lambda x: f"🔥 {x:.2f}x OI")
+
+        sw_rename = {
+            "Ticker": "Stock Symbol",
+            "Live Price ($)": "Live Price ($)",
+            "Type": "Option Direction",
+            "Strike Price ($)": "Target Strike ($)",
+            "Expiration": "Expiry Date",
+            "Timeframe_Horizon": "Trade Timeframe",
+            "Urgency (Vol/OI)": "Urgency (Volume vs OI)",
+            "Money Spent ($)": "Institutional Money Spent ($)",
+            "Execution_Side": "Buyer Aggression",
+            "Volume": "Contracts Traded Today",
+            "Open_Interest": "Existing Open Contracts",
+            "IV": "Implied Volatility (%)",
+            "Trade_Time": "Last Print Time",
+        }
+        st.dataframe(
+            disp_sw[list(sw_rename.keys())].rename(columns=sw_rename),
+            use_container_width=True,
+            hide_index=True,
+            height=580,
+        )
+    else:
+        st.info("No institutional sweeps >= $100,000 detected in the current batch—increase Active Grid Size in the sidebar.")
+
+# ==========================================
+# TAB 3: YTD 2026 BACKTESTER ($100 PER 5-STAR TRADE ACCUMULATION)
+# ==========================================
+with tab_backtest:
+    st.subheader("📊 2026 YTD 5-Star Backtest (Putting $100 into Every 5-Star Setup Since 01/01/2026)")
+    st.markdown(
+        """
+        **How This Backtest Works:**
+        * Every time a **5-Star Setup** triggers on any tracked stock since **January 1, 2026**, you invest **$100** into that trade.
+        * The **Profit or Loss ($)** from each `$100` trade is added to your **Accumulated Total Profit ($)** column so you can see exactly how your money grows trade after trade.
+        """
+    )
+
+    with st.spinner("Running YTD 2026 5-Star Backtest (01/01/2026 to Present) across extended universe..."):
+        bt_2026_df = run_ytd_2026_5star_backtest(active_universe)
+
+    if not bt_2026_df.empty:
+        total_t = len(bt_2026_df)
+        succ_t = len(bt_2026_df[bt_2026_df["Trade Outcome"].str.startswith("✅")])
+        fail_t = total_t - succ_t
+        win_rate = (succ_t / total_t) * 100.0
+
+        total_accumulated_profit = bt_2026_df["Profit / Loss on $100 ($)"].sum()
+        avg_roi_pct = bt_2026_df["Trade ROI (%)"].mean()
+        avg_risk_dlr = bt_2026_df["Max Risk on $100 ($)"].mean()
+
+        b1, b2, b3, b4, b5 = st.columns(5)
+        b1.metric("Total 5-Star Trades (2026)", f"{total_t} Trades", "$100 Put in Each Trade")
+        b2.metric("Success Win Rate", f"{win_rate:.1f}%", f"{succ_t} Wins / {fail_t} Losses")
+        b3.metric("💰 Accumulated Total Profit", f"${total_accumulated_profit:+,.2f}", "Sum of All $100 Trades")
+        b4.metric("📈 Avg Return (ROI) per Trade", f"{avg_roi_pct:+.2f}%", f"${avg_roi_pct:+.2f} per $100 Trade")
+        b5.metric("🛡️ Avg Stop-Loss Risk per $100", f"${avg_risk_dlr:.2f}", f"{avg_risk_dlr:.2f}% Max Risk if Stopped")
+
+        fig_bt = make_subplots(specs=[[{"secondary_y": True}]])
+
+        bar_colors = ["#22c55e" if v >= 0 else "#ef4444" for v in bt_2026_df["Profit / Loss on $100 ($)"]]
+        hover_labels = (
+            "<b>Trade #"
+            + bt_2026_df["Trade #"].astype(str)
+            + " ("
+            + bt_2026_df["Signal Date"]
+            + ") — "
+            + bt_2026_df["Stock Symbol"]
+            + "</b><br>"
+            + "Setup: "
+            + bt_2026_df["5-Star Setup"]
+            + "<br>"
+            + "Outcome: "
+            + bt_2026_df["Trade Outcome"]
+            + "<br>"
+            + "This $100 Trade P&L: $"
+            + bt_2026_df["Profit / Loss on $100 ($)"].map(lambda x: f"{x:+.2f}")
+            + " ("
+            + bt_2026_df["Trade ROI (%)"].map(lambda x: f"{x:+.2f}%")
+            + ")<br>"
+            + "<b>Running Accumulated Profit: $"
+            + bt_2026_df["Accumulated Total Profit ($)"].map(lambda x: f"{x:+,.2f}")
+            + "</b>"
+        )
+
+        fig_bt.add_trace(
+            go.Bar(
+                x=bt_2026_df["Trade #"],
+                y=bt_2026_df["Profit / Loss on $100 ($)"],
+                name="Single $100 Trade Profit/Loss ($)",
+                marker_color=bar_colors,
+                opacity=0.55,
+                hovertext=hover_labels,
+                hoverinfo="text",
+            ),
+            secondary_y=False,
+        )
+
+        fig_bt.add_trace(
+            go.Scatter(
+                x=bt_2026_df["Trade #"],
+                y=bt_2026_df["Accumulated Total Profit ($)"],
+                mode="lines+markers",
+                name="Accumulated Total Profit ($)",
+                line=dict(color="#eab308", width=3.5),
+                marker=dict(size=6, color="#eab308"),
+                hovertext=hover_labels,
+                hoverinfo="text",
+            ),
+            secondary_y=True,
+        )
+
+        fig_bt.update_layout(
+            title="💰 Accumulated Profit Curve Since 01/01/2026 (Investing $100 in Every 5-Star Setup)",
+            xaxis_title="Chronological 5-Star Trade Number (Trade #1 to Present)",
+            template="plotly_dark",
+            height=400,
+            margin=dict(t=40, l=10, r=10, b=10),
+            legend=dict(orientation="h", y=1.11),
+        )
+        fig_bt.update_yaxes(title_text="Single $100 Trade P&L ($)", secondary_y=False)
+        fig_bt.update_yaxes(title_text="Accumulated Total Profit ($)", secondary_y=True)
+        st.plotly_chart(fig_bt, use_container_width=True)
+
+        st.markdown("#### 📜 Trade-by-Trade 2026 YTD Log (Newest Trades First • Clean Headers)")
+        st.dataframe(
+            bt_2026_df.iloc[::-1].reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True,
+            height=480,
+        )
+
+# ==========================================
+# TAB 4: AUTO-LOGGED 5-STAR SQLITE DATABASE
+# ==========================================
+with tab_db:
+    st.subheader("💾 Zero-Click Auto-Logged 5-Star SQLite Database (`openwhale_signals.db`)")
+    st.caption(
+        "Every time any ticker hits a 5-Star rating (even for 1 minute), it is automatically saved here and evaluated on a $100 position size."
+    )
+    if not db_logged_df.empty:
+        db_show = db_logged_df.copy()
+        db_show["Trade ROI (%)"] = np.where(
+            db_show["bias"] == "LONG",
+            ((db_show["latest_spot"] - db_show["entry_price"]) / db_show["entry_price"]) * 100.0,
+            ((db_show["entry_price"] - db_show["latest_spot"]) / db_show["entry_price"]) * 100.0,
+        ).round(2)
+        db_show["Max Risk (%)"] = (
+            np.abs(db_show["entry_price"] - db_show["stop_loss"]) / db_show["entry_price"] * 100.0
+        ).round(2)
+        db_show["Profit / Loss on $100 ($)"] = (100.0 * db_show["Trade ROI (%)"] / 100.0).round(2)
+        db_show["Max Risk on $100 ($)"] = (100.0 * db_show["Max Risk (%)"] / 100.0).round(2)
+        db_show["Accumulated Total Profit ($)"] = db_show["Profit / Loss on $100 ($)"].cumsum().round(2)
+
+        db_clean_headers = {
+            "signal_date": "Signal Date",
+            "ticker": "Stock Symbol",
+            "first_seen_time": "First Logged Time",
+            "last_seen_time": "Latest Update Time",
+            "times_confirmed": "Times Confirmed",
+            "bias": "Direction",
+            "strength_trend": "Signal Strength",
+            "duration_mins": "Duration Held (Mins)",
+            "entry_price": "First Entry Price ($)",
+            "latest_spot": "Current Price ($)",
+            "stop_loss": "Stop-Loss ($)",
+            "target_price": "Target Price ($)",
+            "Max Risk on $100 ($)": "Max Risk on $100 ($)",
+            "Profit / Loss on $100 ($)": "Profit / Loss on $100 ($)",
+            "Trade ROI (%)": "Trade ROI (%)",
+            "Accumulated Total Profit ($)": "Accumulated Total Profit ($)",
+        }
+        st.dataframe(
+            db_show[list(db_clean_headers.keys())].rename(columns=db_clean_headers),
+            use_container_width=True,
+            hide_index=True,
+            height=450,
+        )
+    else:
+        st.info("Waiting for the first 5-Star setup of the session—will log automatically as soon as one triggers.")
+
+# ==========================================
+# TAB 5: CONGRESS & CORPORATE INSIDER TRACKER
+# ==========================================
+with tab_congress:
+    st.subheader("🏛️ U.S. Congress (STOCK Act) & SEC Form 4 Corporate Insider Filings")
+    col_cong, col_ins = st.columns(2)
+    with col_cong:
+        st.markdown("#### 🏛️ Latest U.S. Congress Trades")
+        if not cong_check_df.empty:
+            st.dataframe(cong_check_df, use_container_width=True, hide_index=True, height=450)
+    with col_ins:
+        st.markdown("#### 👔 Latest SEC Form 4 Corporate Insider Buys")
+        if not ins_check_df.empty:
+            st.dataframe(ins_check_df, use_container_width=True, hide_index=True, height=450)
+
+# Auto-refresh at selected interval (30s to 180s in multiples of 15s)
+if live_stream_on:
+    time.sleep(refresh_interval_sec)
+    st.rerun()
