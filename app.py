@@ -1,6 +1,7 @@
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime as dt
+import io
 import os
 import re
 import sqlite3
@@ -114,45 +115,93 @@ def render_hover_glossary_banner():
 
 
 # ==========================================
-# 1. EXTENDED UNION STOCK UNIVERSE
+# 1. DYNAMIC INDEX & EXCHANGE UNIVERSE LOADER
 # ==========================================
-TOP_50_MARKET_CAP = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK-B", "AVGO", "LLY",
-    "WMT", "JPM", "V", "XOM", "MA", "ORCL", "UNH", "COST", "PG", "HD",
-    "JNJ", "NFLX", "ABBV", "BAC", "CRM", "KO", "CVX", "MRK", "AMD", "PEP",
-    "TMO", "CSCO", "LIN", "WFC", "ADBE", "ACN", "MCD", "ABT", "IBM", "GE",
-    "CAT", "PM", "TXN", "ISRG", "QCOM", "INTU", "VZ", "AMGN", "NOW", "GS"
-]
-
 POPULAR_ETFS = [
     "SPY", "QQQ", "IWM", "DIA", "SMH", "XLF", "XLE", "XLK", "XLV", "XLI",
     "XLY", "XLP", "XLU", "ARKK", "GLD", "SLV", "TLT", "HYG", "IBIT", "EEM",
-    "SOXL", "TQQQ", "SQQQ", "SPXL", "XBI", "KRE", "GDX", "XLB", "XLC", "VTI"
-]
-
-EXTENDED_SP_NASDAQ = [
-    "MS", "SPGI", "AXP", "BLK", "C", "SCHW", "CB", "PGR", "PYPL", "COF",
-    "USB", "PNC", "TFC", "CME", "ICE", "MCO", "TMUS", "CMCSA", "CHTR", "DIS",
-    "BKNG", "MAR", "CMG", "MCD", "LOW", "TJX", "ORLY", "AZO", "ROST", "NKE",
-    "SBUX", "TGT", "F", "GM", "COP", "SLB", "EOG", "MPC", "PSX", "VLO",
-    "OXY", "HAL", "DE", "LMT", "RTX", "HON", "UNP", "BA", "UPS", "FDX",
-    "ADP", "ETN", "ITW", "GD", "NOC", "WM", "SHW", "FCX", "NEM", "NEE",
-    "SO", "DUK", "AMAT", "MU", "LRCX", "ADI", "KLAC", "PANW", "SNPS", "CDNS",
-    "CRWD", "PLTR", "UBER", "ABNB", "SHOP", "SNOW", "ARM", "SMCI", "DELL", "MRVL"
-]
-
-OPTIONS_FLOW_LEADERS = [
-    "COIN", "MSTR", "INTC", "SQ", "PFE", "MRNA", "GILD", "REGN", "VRTX", "ISRG",
-    "LLY", "BMY", "CVS", "HUM", "CI", "BIIB", "GEHC", "DHR", "ABT", "MDLZ"
-]
-
-SOCIAL_MEDIA_BUZZ = [
-    "RDDT", "GME", "AMC", "SOFI", "HOOD", "RIVN", "LCID", "DJT", "MARA", "RIOT",
-    "CLSK", "IONQ", "RKLB", "ASTS", "LUNR", "HIMS", "CVNA", "UPST", "AFRM", "CELH"
+    "SOXL", "TQQQ", "SQQQ", "SPXL", "XBI", "KRE", "GDX", "VTI"
 ]
 
 OCC_REGEX = re.compile(r"^([A-Z0-9]+?)(\d{6})([CP])(\d{8})$")
 MIN_SWEEP_USD = 100000
+
+
+def _clean_yf_symbol(sym):
+    """Formats symbols for Yahoo Finance (e.g., BRK.B -> BRK-B) and filters warrants/test issues."""
+    s = str(sym).upper().strip().replace(".", "-")
+    if not s or len(s) > 5 or "$" in s or "^" in s or "/" in s:
+        return None
+    return s
+
+
+@st.cache_data(ttl=86400)
+def fetch_sp500_tickers():
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers, timeout=10)
+        tables = pd.read_html(io.StringIO(resp.text))
+        syms = [_clean_yf_symbol(x) for x in tables[0]["Symbol"].dropna().tolist()]
+        return [s for s in syms if s]
+    except Exception:
+        return ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "JPM", "LLY"]
+
+
+@st.cache_data(ttl=86400)
+def fetch_nasdaq100_tickers():
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get("https://en.wikipedia.org/wiki/Nasdaq-100", headers=headers, timeout=10)
+        tables = pd.read_html(io.StringIO(resp.text))
+        for tbl in tables:
+            for col in ["Ticker", "Symbol"]:
+                if col in tbl.columns and len(tbl) >= 90:
+                    syms = [_clean_yf_symbol(x) for x in tbl[col].dropna().tolist()]
+                    return [s for s in syms if s]
+    except Exception:
+        pass
+    return ["NVDA", "AAPL", "MSFT", "AMZN", "META", "AVGO", "TSLA", "GOOGL", "COST", "NFLX"]
+
+
+@st.cache_data(ttl=86400)
+def fetch_dow30_tickers():
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get("https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average", headers=headers, timeout=10)
+        tables = pd.read_html(io.StringIO(resp.text))
+        for tbl in tables:
+            if "Symbol" in tbl.columns and 25 <= len(tbl) <= 35:
+                syms = [_clean_yf_symbol(x) for x in tbl["Symbol"].dropna().tolist()]
+                return [s for s in syms if s]
+    except Exception:
+        pass
+    return ["AAPL", "MSFT", "NVDA", "JPM", "V", "UNH", "GS", "HD", "MCD", "CAT"]
+
+
+@st.cache_data(ttl=86400)
+def fetch_exchange_directory_tickers(exchange="NASDAQ"):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        if exchange == "NASDAQ":
+            url = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+            resp = requests.get(url, headers=headers, timeout=12)
+            df = pd.read_csv(io.StringIO(resp.text), sep="|")
+            df = df[df["Test Issue"] == "N"]
+            syms = [
+                _clean_yf_symbol(x)
+                for x in df["Symbol"].dropna().tolist()
+                if not (len(str(x)) == 5 and str(x)[-1] in ("W", "U", "R"))
+            ]
+            return [s for s in syms if s]
+        else:
+            url = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+            resp = requests.get(url, headers=headers, timeout=12)
+            df = pd.read_csv(io.StringIO(resp.text), sep="|")
+            df = df[(df["Test Issue"] == "N") & (df["Exchange"] == "N")]
+            syms = [_clean_yf_symbol(x) for x in df["ACT Symbol"].dropna().tolist()]
+            return [s for s in syms if s]
+    except Exception:
+        return fetch_sp500_tickers()
 
 
 # ==========================================
@@ -208,7 +257,7 @@ def fetch_sec_insider_trades(ticker_filter=None):
         url = "http://openinsider.com/screener?s=&fd=30&xp=1&vl=100&cnt=50&page=1"
     try:
         resp = requests.get(url, headers=headers, timeout=7)
-        tables = pd.read_html(resp.text)
+        tables = pd.read_html(io.StringIO(resp.text))
         for tbl in tables:
             cols = [str(c).replace("\xa0", " ").strip() for c in tbl.columns]
             if "Filing Date" in cols and "Trade Type" in cols:
@@ -226,77 +275,76 @@ def fetch_sec_insider_trades(ticker_filter=None):
 
 
 @st.cache_data(ttl=1800)
-def build_master_universe():
+def build_dynamic_universe(selected_source="Union (S&P 500 + Nasdaq-100 + Dow 30 + Filings)"):
     cong_df = fetch_congress_trades()
     ins_df = fetch_sec_insider_trades()
-
-    cong_tickers = cong_df["Stock Symbol"].dropna().unique().tolist()[:20] if not cong_df.empty else []
+    cong_tickers = cong_df["Stock Symbol"].dropna().unique().tolist()[:25] if not cong_df.empty else []
     ins_tickers = (
-        [str(x).strip().upper() for x in ins_df["Ticker"].dropna().unique().tolist()[:20]]
+        [_clean_yf_symbol(x) for x in ins_df["Ticker"].dropna().unique().tolist()[:25]]
         if (not ins_df.empty and "Ticker" in ins_df.columns)
         else []
     )
-    fallback_filings = ["NVDA", "MSFT", "GOOGL", "AAPL", "PANW", "LMT", "RTX", "GD", "JPM", "UNH"]
+    filings = [t for t in (cong_tickers + ins_tickers) if t]
 
-    union_list = list(
-        dict.fromkeys(
-            POPULAR_ETFS
-            + TOP_50_MARKET_CAP
-            + EXTENDED_SP_NASDAQ
-            + OPTIONS_FLOW_LEADERS
-            + SOCIAL_MEDIA_BUZZ
-            + cong_tickers
-            + ins_tickers
-            + fallback_filings
-        )
-    )
-    return [t for t in union_list if isinstance(t, str) and 1 <= len(t) <= 5]
+    if selected_source == "S&P 500 (All ~500) + ETFs":
+        base = POPULAR_ETFS + fetch_sp500_tickers()
+    elif selected_source == "Nasdaq-100 (~100) + ETFs":
+        base = POPULAR_ETFS + fetch_nasdaq100_tickers()
+    elif selected_source == "Dow Jones 30":
+        base = fetch_dow30_tickers()
+    elif selected_source == "Full NASDAQ Exchange (All)":
+        base = POPULAR_ETFS + fetch_exchange_directory_tickers("NASDAQ")
+    elif selected_source == "Full NYSE Exchange (All)":
+        base = POPULAR_ETFS + fetch_exchange_directory_tickers("NYSE")
+    else:
+        base = POPULAR_ETFS + fetch_dow30_tickers() + fetch_nasdaq100_tickers() + fetch_sp500_tickers() + filings
+
+    return list(dict.fromkeys(base))
 
 
 # ==========================================
-# 3. AUTOMATIC ZERO-CLICK SQLITE LOGGING & SILENT GITHUB SYNC
+# 3. THREAD-SAFE SQLITE LOGGING & SILENT GITHUB SYNC
 # ==========================================
+DB_LOCK = threading.Lock()
 DB_PATH = "openwhale_signals.db"
 CSV_BACKUP_PATH = "openwhale_signals_log.csv"
 
 
 def init_sqlite_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS signal_history (
-            signal_date TEXT,
-            ticker TEXT,
-            first_seen_time TEXT,
-            last_seen_time TEXT,
-            times_confirmed INTEGER,
-            peak_stars INTEGER,
-            current_stars INTEGER,
-            bias TEXT,
-            strength_trend TEXT,
-            duration_mins INTEGER,
-            entry_price REAL,
-            latest_spot REAL,
-            stop_loss REAL,
-            target_price REAL,
-            rr_ratio REAL,
-            call_flow_pct REAL,
-            PRIMARY KEY (signal_date, ticker)
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_history (
+                signal_date TEXT,
+                ticker TEXT,
+                first_seen_time TEXT,
+                last_seen_time TEXT,
+                times_confirmed INTEGER,
+                peak_stars INTEGER,
+                current_stars INTEGER,
+                bias TEXT,
+                strength_trend TEXT,
+                duration_mins INTEGER,
+                entry_price REAL,
+                latest_spot REAL,
+                stop_loss REAL,
+                target_price REAL,
+                rr_ratio REAL,
+                call_flow_pct REAL,
+                PRIMARY KEY (signal_date, ticker)
+            )
+            """
         )
-        """
-    )
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
 
-def _silent_github_push_worker():
+def _silent_github_push_worker(gh_repo, gh_token):
     try:
-        gh_repo = st.secrets.get("GITHUB_REPO", "") if "GITHUB_REPO" in st.secrets else os.environ.get("GITHUB_REPO", "")
-        gh_token = st.secrets.get("GITHUB_TOKEN", "") if "GITHUB_TOKEN" in st.secrets else os.environ.get("GITHUB_TOKEN", "")
         if not (gh_repo and gh_token):
             return
-
         for fpath in [DB_PATH, CSV_BACKUP_PATH]:
             if not os.path.exists(fpath):
                 continue
@@ -318,67 +366,69 @@ def _silent_github_push_worker():
         pass
 
 
-def auto_log_5star_to_db(eval_dict):
-    if eval_dict["stars"] < 5:
+def auto_log_5star_to_db(eval_dict, gh_repo="", gh_token=""):
+    if eval_dict.get("stars", 0) < 5:
         return
     init_sqlite_db()
     today_str = dt.date.today().strftime("%Y-%m-%d")
     now_str = dt.datetime.now().strftime("%H:%M:%S")
     tkr = eval_dict["ticker"]
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT first_seen_time, times_confirmed, peak_stars FROM signal_history WHERE signal_date=? AND ticker=?",
-        (today_str, tkr),
-    )
-    row = cur.fetchone()
     is_new_5star = False
 
-    if row is None:
-        is_new_5star = True
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+        cur = conn.cursor()
         cur.execute(
-            "INSERT INTO signal_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                today_str, tkr, now_str, now_str, 1,
-                eval_dict["stars"], eval_dict["stars"], eval_dict["bias"],
-                eval_dict["strength_trend"], eval_dict["duration_mins"],
-                eval_dict["spot"], eval_dict["spot"], eval_dict["stop"],
-                eval_dict["target"], eval_dict["rr"], eval_dict["call_pct"],
-            ),
+            "SELECT first_seen_time, times_confirmed, peak_stars FROM signal_history WHERE signal_date=? AND ticker=?",
+            (today_str, tkr),
         )
-    else:
-        _, count_conf, peak_s = row
-        cur.execute(
-            """
-            UPDATE signal_history
-            SET last_seen_time=?, times_confirmed=?, peak_stars=?, current_stars=?,
-                bias=?, strength_trend=?, duration_mins=?, latest_spot=?,
-                stop_loss=?, target_price=?, rr_ratio=?, call_flow_pct=?
-            WHERE signal_date=? AND ticker=?
-            """,
-            (
-                now_str, int(count_conf) + 1, max(int(peak_s), eval_dict["stars"]),
-                eval_dict["stars"], eval_dict["bias"], eval_dict["strength_trend"],
-                eval_dict["duration_mins"], eval_dict["spot"], eval_dict["stop"],
-                eval_dict["target"], eval_dict["rr"], eval_dict["call_pct"],
-                today_str, tkr,
-            ),
-        )
-    conn.commit()
-    df_log = pd.read_sql_query("SELECT * FROM signal_history ORDER BY signal_date DESC, last_seen_time DESC", conn)
-    conn.close()
-    df_log.to_csv(CSV_BACKUP_PATH, index=False)
+        row = cur.fetchone()
 
-    if is_new_5star:
-        threading.Thread(target=_silent_github_push_worker, daemon=True).start()
+        if row is None:
+            is_new_5star = True
+            cur.execute(
+                "INSERT INTO signal_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    today_str, tkr, now_str, now_str, 1,
+                    eval_dict["stars"], eval_dict["stars"], eval_dict["bias"],
+                    eval_dict["strength_trend"], eval_dict["duration_mins"],
+                    eval_dict["spot"], eval_dict["spot"], eval_dict["stop"],
+                    eval_dict["target"], eval_dict["rr"], eval_dict["call_pct"],
+                ),
+            )
+        else:
+            _, count_conf, peak_s = row
+            cur.execute(
+                """
+                UPDATE signal_history
+                SET last_seen_time=?, times_confirmed=?, peak_stars=?, current_stars=?,
+                    bias=?, strength_trend=?, duration_mins=?, latest_spot=?,
+                    stop_loss=?, target_price=?, rr_ratio=?, call_flow_pct=?
+                WHERE signal_date=? AND ticker=?
+                """,
+                (
+                    now_str, int(count_conf) + 1, max(int(peak_s), eval_dict["stars"]),
+                    eval_dict["stars"], eval_dict["bias"], eval_dict["strength_trend"],
+                    eval_dict["duration_mins"], eval_dict["spot"], eval_dict["stop"],
+                    eval_dict["target"], eval_dict["rr"], eval_dict["call_pct"],
+                    today_str, tkr,
+                ),
+            )
+        conn.commit()
+        df_log = pd.read_sql_query("SELECT * FROM signal_history ORDER BY signal_date DESC, last_seen_time DESC", conn)
+        conn.close()
+        df_log.to_csv(CSV_BACKUP_PATH, index=False)
+
+    if is_new_5star and gh_repo and gh_token:
+        threading.Thread(target=_silent_github_push_worker, args=(gh_repo, gh_token), daemon=True).start()
 
 
 def read_signals_from_db():
     init_sqlite_db()
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT * FROM signal_history ORDER BY signal_date DESC, last_seen_time DESC", conn)
-    conn.close()
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+        df = pd.read_sql_query("SELECT * FROM signal_history ORDER BY signal_date DESC, last_seen_time DESC", conn)
+        conn.close()
     return df
 
 
@@ -492,8 +542,8 @@ def fetch_batch_live_quotes(tickers):
     return spot_map
 
 
-@st.cache_data(ttl=30)
 def fetch_cboe_options_for_ticker(ticker_symbol, spot_override=None):
+    """Plain function (no st.cache_data inside worker threads to avoid NoSessionContext)."""
     clean_sym = ticker_symbol.upper().strip().replace("^", "")
     index_tickers = {"SPX", "VIX", "NDX", "RUT", "DJX", "XSP"}
     cboe_sym = f"_{clean_sym}" if clean_sym in index_tickers else clean_sym
@@ -712,7 +762,7 @@ def evaluate_star_rating(spot_info, opt_info):
         )
     )
 
-    res = {
+    return {
         "ticker": spot_info["ticker"],
         "stars": stars,
         "star_str": star_str,
@@ -736,10 +786,6 @@ def evaluate_star_rating(spot_info, opt_info):
         "sweeps_summary": f"{call_sweeps}C / {put_sweeps}P",
     }
 
-    if stars == 5:
-        auto_log_5star_to_db(res)
-    return res
-
 
 @st.cache_data(ttl=25)
 def run_multi_ticker_grid_and_sweeps(universe_tickers):
@@ -757,7 +803,6 @@ def run_multi_ticker_grid_and_sweeps(universe_tickers):
             eval_res = evaluate_star_rating(s_info, o_info)
             return eval_res, o_info["sweeps_df"], True
         except Exception:
-            # Derive synthetic walls from intraday range so grid stays populated if CBOE is throttled
             fallback_opt = {
                 "call_wall": round(s_info["spot"] * 1.022, 2),
                 "put_wall": round(s_info["spot"] * 0.978, 2),
@@ -972,13 +1017,27 @@ def run_ytd_2026_5star_backtest(tickers):
 
 
 # ==========================================
-# 6. SIDEBAR CONTROLS (SLIDERS IN MULTIPLES)
+# 6. SIDEBAR CONTROLS
 # ==========================================
 st.sidebar.title("🐋 OpenWhale Terminal")
-st.sidebar.caption("Auto-Logging 5-Star Setups • $100k+ Sweeps • Configurable Refresh")
+st.sidebar.caption("Dynamic Universe • Auto-Logging 5-Star Setups • $100k+ Sweeps")
 
-master_universe = build_master_universe()
-max_grid_multiples = max(10, (len(master_universe) // 10) * 10)
+universe_choice = st.sidebar.selectbox(
+    "🌐 Dynamic Ticker Universe:",
+    options=[
+        "Union (S&P 500 + Nasdaq-100 + Dow 30 + Filings)",
+        "S&P 500 (All ~500) + ETFs",
+        "Nasdaq-100 (~100) + ETFs",
+        "Dow Jones 30",
+        "Full NASDAQ Exchange (All)",
+        "Full NYSE Exchange (All)",
+    ],
+    index=0,
+    help="Dynamically pulls live constituents from Wikipedia and official NASDAQ Trader exchange directories.",
+)
+
+master_universe = build_dynamic_universe(universe_choice)
+slider_max = min(200, max(10, (len(master_universe) // 10) * 10))
 
 use_plain_english = st.sidebar.toggle(
     "🗣️ Use Everyday Plain-English Terminology",
@@ -1004,21 +1063,21 @@ refresh_interval_sec = st.sidebar.slider(
 scan_batch_size = st.sidebar.slider(
     "📡 Active Grid Size (Multiples of 10):",
     min_value=10,
-    max_value=max_grid_multiples,
-    value=min(50, max_grid_multiples),
+    max_value=slider_max,
+    value=min(50, slider_max),
     step=10,
-    help=f"Select how many tickers from the {len(master_universe)}-ticker union universe to stream in multiples of 10.",
+    help=f"Loaded {len(master_universe):,} total tickers. Select how many to stream live in multiples of 10.",
 )
 
 chart_ticker = st.sidebar.selectbox(
-    "📈 Focus Ticker for Candlestick Chart:",
+    f"📈 Focus Ticker ({len(master_universe):,} Available):",
     options=master_universe,
     index=0,
 )
 
 st.sidebar.markdown("---")
 st.sidebar.success(
-    f"✅ **Auto-DB Logging Active:** Any 5-Star setup across all {len(master_universe)} union tickers is automatically logged to `openwhale_signals.db`."
+    f"✅ **Auto-DB Logging Active:** Any 5-Star setup across the active grid is automatically logged to `openwhale_signals.db`."
 )
 
 # ==========================================
@@ -1033,11 +1092,17 @@ if chart_ticker not in active_universe:
 with st.spinner(f"Streaming live quotes & scanning $100k+ sweeps across {len(active_universe)} tickers..."):
     grid_df, sweeps_100k_df, spot_map, health_stats = run_multi_ticker_grid_and_sweeps(active_universe)
 
+# Log 5-Star setups sequentially on the main thread (prevents SQLite locks & NoSessionContext)
+_gh_repo = st.secrets.get("GITHUB_REPO", "") if "GITHUB_REPO" in st.secrets else os.environ.get("GITHUB_REPO", "")
+_gh_token = st.secrets.get("GITHUB_TOKEN", "") if "GITHUB_TOKEN" in st.secrets else os.environ.get("GITHUB_TOKEN", "")
+if not grid_df.empty:
+    for _, _r5 in grid_df[grid_df["stars"] == 5].iterrows():
+        auto_log_5star_to_db(_r5.to_dict(), gh_repo=_gh_repo, gh_token=_gh_token)
+
 db_logged_df = read_signals_from_db()
 cong_check_df = fetch_congress_trades()
 ins_check_df = fetch_sec_insider_trades()
 
-# Top App Health Bar
 quotes_ok = health_stats["quotes_loaded"] > 0
 cboe_ok = health_stats["cboe_loaded"] > 0
 filings_ok = (not cong_check_df.empty) or (not ins_check_df.empty)
@@ -1072,8 +1137,6 @@ h5.metric(
 )
 
 render_hover_glossary_banner()
-
-four_star_count = len(grid_df[grid_df["stars"] == 4]) if not grid_df.empty else 0
 
 tab_grid, tab_sweeps, tab_backtest, tab_db, tab_congress = st.tabs(
     [
@@ -1240,7 +1303,7 @@ with tab_grid:
 with tab_sweeps:
     st.subheader("🚨 Multi-Ticker Institutional Sweep Tape (Minimum $100,000 • Sorted by Urgency)")
     st.caption(
-        "Aggregates all institutional sweeps >= $100,000 across the entire tracked stock & ETF universe, ranked highest-to-lowest by Urgency (`Volume / Open Interest`)."
+        "Aggregates all institutional sweeps >= $100,000 across the active stock & ETF universe, ranked highest-to-lowest by Urgency (`Volume / Open Interest`)."
     )
 
     if not sweeps_100k_df.empty:
@@ -1287,7 +1350,7 @@ with tab_backtest:
         """
     )
 
-    with st.spinner("Running YTD 2026 5-Star Backtest (01/01/2026 to Present) across extended universe..."):
+    with st.spinner("Running YTD 2026 5-Star Backtest (01/01/2026 to Present) across active universe..."):
         bt_2026_df = run_ytd_2026_5star_backtest(active_universe)
 
     if not bt_2026_df.empty:
