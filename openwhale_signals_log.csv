@@ -1,8 +1,4 @@
 signal_date,ticker,first_seen_time,last_seen_time,times_confirmed,peak_stars,current_stars,bias,strength_trend,duration_mins,entry_price,latest_spot,stop_loss,target_price,rr_ratio,call_flow_pct
-2026-11-27,V,05:35:15,05:35:15,1,5,5,LONG,❄️ Cooling Off,400,425.18,425.18,420.08,434.53,1.83,62.0
-2026-11-27,ABBV,05:35:15,05:35:15,1,5,5,SHORT,🔥 Gaining Strength,470,294.0,294.0,297.53,287.53,1.83,38.0
-2026-11-27,HD,05:35:14,05:35:14,1,5,5,LONG,🔥 Gaining Strength,470,361.4,361.4,357.14,369.35,1.87,62.0
-2026-11-27,GDX,05:35:14,05:35:14,1,5,5,LONG,❄️ Cooling Off,565,74.5,74.5,73.61,76.14,1.84,62.0
 2026-11-26,V,13:04:52,17:50:30,2,5,5,LONG,❄️ Cooling Off,400,425.18,425.18,420.08,434.53,1.83,62.0
 2026-11-26,HD,13:04:45,17:50:30,4,5,5,LONG,🔥 Gaining Strength,470,361.4,361.4,357.14,369.35,1.87,62.0
 2026-11-26,GDX,13:04:45,17:50:30,4,5,5,LONG,❄️ Cooling Off,565,74.5,74.5,73.61,76.14,1.84,62.0
